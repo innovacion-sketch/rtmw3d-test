@@ -68,6 +68,7 @@
     <label>Alto <input type="range" id="adjY" min="-0.3" max="0.3" step="0.01" value="-0.05" /></label>
     <label>Frente <input type="range" id="adjX" min="-0.3" max="0.3" step="0.01" value="-0.08" /></label>
     <label>Giro <input type="range" id="adjRot" min="-3.15" max="3.15" step="0.05" value="0" /></label>
+    <label>Perspectiva <input type="range" id="adjZGain" min="-400" max="400" step="10" value="150" /></label>
     <button id="resetAdj">Reset</button>
     <button id="flipL">Voltear pie izq</button>
   </div>
@@ -119,7 +120,10 @@ const CATALOG = [
 let currentShoe = CATALOG[0];
 
 // Ajustes en vivo del anclado (se controlan con los sliders)
-const ADJ = { scale: 1.35, offY: -0.05, offX: -0.08, rot: 0 };
+// zGain: convierte la profundidad z de RTMW3D a "pixeles" para inclinar el
+// tenis cuando el pie apunta a la camara. Se calibra con el slider
+// Perspectiva; si el tenis gira al reves, moverlo a negativo.
+const ADJ = { scale: 1.35, offY: -0.05, offX: -0.08, rot: 0, zGain: 150 };
 
 // ===== One Euro Filter (suaviza) =====
 class LowPass { constructor(){this.y=null;} filter(x,a){this.y=this.y===null?x:a*x+(1-a)*this.y;return this.y;} }
@@ -245,12 +249,22 @@ function updateShoe(group, ankle, heel, toe, w, h){
   const hx = heel.x*w, hy = heel.y*h, tx = toe.x*w, ty = toe.y*h;
 
   let cx = (hx+tx)/2, cy = (hy+ty)/2;
-  const len = Math.hypot(tx-hx, ty-hy);
-  if(len < 5){ group.visible = false; return; }
+  const len2d = Math.hypot(tx-hx, ty-hy);
+
+  // Profundidad RTMW3D: z menor = mas cerca de la camara. Si el pie apunta
+  // a la camara, la punta esta mas cerca que el talon (dz > 0).
+  const dzPix = (heel.z - toe.z) * ADJ.zGain;
+  // Largo real del pie combinando pantalla + profundidad: asi el tenis NO
+  // se encoge cuando el pie apunta a la camara.
+  const len = Math.hypot(len2d, dzPix);
+  // Limites de sanidad: descarta frames glitch (tenis gigante/enano)
+  if(len < 5 || len > h*0.6){ group.visible = false; return; }
 
   const a1 = Math.atan2(ty-hy, tx-hx);
   const a2 = Math.atan2(ty-ay, tx-ax);
   const angle = Math.atan2((Math.sin(a1)+Math.sin(a2))/2, (Math.cos(a1)+Math.cos(a2))/2);
+  // Guiñada 3D: cuanto apunta el pie hacia/desde la camara
+  const yaw = Math.atan2(dzPix, len2d);
 
   cx += Math.cos(angle) * ADJ.offX * len - Math.sin(angle) * ADJ.offY * len;
   cy += Math.sin(angle) * ADJ.offX * len + Math.cos(angle) * ADJ.offY * len;
@@ -258,7 +272,9 @@ function updateShoe(group, ankle, heel, toe, w, h){
   group.visible = true;
   group.position.set(cx, cy, 0);
   group.scale.setScalar(len * ADJ.scale * currentShoe.scale);
-  group.rotation.z = -angle + ADJ.rot;
+  // Primero alinea en pantalla (Z), luego gira la punta hacia la camara (Y)
+  group.rotation.order = 'ZYX';
+  group.rotation.set(0, yaw, -angle + ADJ.rot);
 }
 
 // ===== Adaptador RTMW3D: convierte el JSON del WS al formato que usaba MediaPipe =====
@@ -421,12 +437,14 @@ document.getElementById('adjScale').addEventListener('input', e => ADJ.scale = p
 document.getElementById('adjY').addEventListener('input', e => ADJ.offY = parseFloat(e.target.value));
 document.getElementById('adjX').addEventListener('input', e => ADJ.offX = parseFloat(e.target.value));
 document.getElementById('adjRot').addEventListener('input', e => ADJ.rot = parseFloat(e.target.value));
+document.getElementById('adjZGain').addEventListener('input', e => ADJ.zGain = parseFloat(e.target.value));
 document.getElementById('resetAdj').addEventListener('click', () => {
-  ADJ.scale = 1.35; ADJ.offY = -0.05; ADJ.offX = -0.08; ADJ.rot = 0;
+  ADJ.scale = 1.35; ADJ.offY = -0.05; ADJ.offX = -0.08; ADJ.rot = 0; ADJ.zGain = 150;
   document.getElementById('adjScale').value = 1.35;
   document.getElementById('adjY').value = -0.05;
   document.getElementById('adjX').value = -0.08;
   document.getElementById('adjRot').value = 0;
+  document.getElementById('adjZGain').value = 150;
 });
 document.getElementById('flipL').addEventListener('click', () => {
   if(!shoeLeft) return;
