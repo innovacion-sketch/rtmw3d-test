@@ -356,8 +356,22 @@ def main():
         pose_est_results = []
 
         if args.input == 'webcam':
-            # CAP_DSHOW abre mucho mas rapido que MSMF en Windows
-            video = cv2.VideoCapture(args.cam_id, cv2.CAP_DSHOW)
+            # DSHOW abre rapido pero en algunas PCs no captura por indice;
+            # se prueba DSHOW -> MSMF -> default y se usa el primero que lea.
+            video = None
+            for backend in (cv2.CAP_DSHOW, cv2.CAP_MSMF, cv2.CAP_ANY):
+                cap = cv2.VideoCapture(args.cam_id, backend)
+                ok, _ = cap.read()
+                if ok:
+                    video = cap
+                    print(f'[camara] indice {args.cam_id} abierta con '
+                          f'backend {cap.getBackendName()}', flush=True)
+                    break
+                cap.release()
+            if video is None:
+                raise RuntimeError(
+                    f'No se pudo abrir la camara {args.cam_id} con ningun '
+                    'backend. Probar otros indices con bridge/list_cameras.py')
         else:
             video = cv2.VideoCapture(args.input)
 
