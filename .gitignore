@@ -1,0 +1,7 @@
+# entorno y artefactos pesados regenerables (setup_oficina.ps1 los recrea)
+.venv/
+wheels/
+mmpose/
+out_fase1/
+__pycache__/
+*.pyc
