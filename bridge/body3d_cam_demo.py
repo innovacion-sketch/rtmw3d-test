@@ -359,9 +359,17 @@ def main():
             # DSHOW abre rapido pero en algunas PCs no captura por indice;
             # se prueba DSHOW -> MSMF -> default y se usa el primero que lea.
             video = None
-            for backend in (cv2.CAP_DSHOW, cv2.CAP_MSMF, cv2.CAP_ANY):
+            for backend in (cv2.CAP_MSMF, cv2.CAP_DSHOW, cv2.CAP_ANY):
                 cap = cv2.VideoCapture(args.cam_id, backend)
                 ok, _ = cap.read()
+                if not ok and cap.isOpened():
+                    # conecta pero no transmite: pedir MJPG 640x480
+                    # (las ELP saturan el bus USB en RAW a resolucion completa)
+                    cap.set(cv2.CAP_PROP_FOURCC,
+                            cv2.VideoWriter_fourcc(*'MJPG'))
+                    cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
+                    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
+                    ok, _ = cap.read()
                 if ok:
                     video = cap
                     print(f'[camara] indice {args.cam_id} abierta con '
