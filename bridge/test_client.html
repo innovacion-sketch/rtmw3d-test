@@ -1,0 +1,81 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<title>Test cliente RTMW3D — pies por WebSocket</title>
+<style>
+  body { background:#111; color:#ddd; font-family:monospace; margin:20px; }
+  canvas { background:#000; border:1px solid #444; display:block; margin-top:10px; }
+  #estado { color:#f66; }
+  #estado.ok { color:#6f6; }
+</style>
+</head>
+<body>
+<h3>Test RTMW3D → WebSocket (pies + tobillos)</h3>
+<div>estado: <span id="estado">conectando…</span>
+ | fps server: <span id="fps">–</span>
+ | latencia: <span id="lat">–</span> ms</div>
+<canvas id="cv" width="640" height="480"></canvas>
+<div style="margin-top:8px">
+  <span style="color:#4f4">● izquierda</span>
+  <span style="color:#fa4">● derecha</span>
+  — punto grande = talón, mediano = dedo gordo, chico = dedo chico, anillo = tobillo.
+  El tamaño del texto z es la profundidad que reporta el modelo.
+</div>
+<script>
+const cv = document.getElementById('cv');
+const ctx = cv.getContext('2d');
+const $ = id => document.getElementById(id);
+const COLORES = { left: '#4f4', right: '#fa4' };
+
+function conectar() {
+  const ws = new WebSocket('ws://localhost:8765');
+  ws.onopen = () => { const e = $('estado'); e.textContent = 'conectado'; e.className = 'ok'; };
+  ws.onclose = () => {
+    const e = $('estado'); e.textContent = 'desconectado, reintentando…'; e.className = '';
+    setTimeout(conectar, 1500);
+  };
+  ws.onmessage = ev => {
+    const m = JSON.parse(ev.data);
+    $('fps').textContent = m.fps;
+    $('lat').textContent = Math.max(0, Date.now() - m.t);
+    if (cv.width !== m.w || cv.height !== m.h) { cv.width = m.w; cv.height = m.h; }
+    ctx.clearRect(0, 0, cv.width, cv.height);
+    ctx.fillStyle = '#000'; ctx.fillRect(0, 0, cv.width, cv.height);
+    for (const lado of ['left', 'right']) {
+      const d = m[lado];
+      if (!d) continue;
+      const c = COLORES[lado];
+      // lineas talon->dedos y tobillo->talon
+      ctx.strokeStyle = c; ctx.lineWidth = 2;
+      for (const [a, b] of [['heel','toe'], ['heel','small_toe'], ['ankle','heel']]) {
+        ctx.beginPath();
+        ctx.moveTo(d[a][0], d[a][1]);
+        ctx.lineTo(d[b][0], d[b][1]);
+        ctx.stroke();
+      }
+      // puntos (radio segun tipo, alpha segun score)
+      for (const [nombre, radio] of [['heel',8], ['toe',6], ['small_toe',4]]) {
+        const s = d.score[nombre];
+        ctx.globalAlpha = Math.max(0.15, Math.min(1, s));
+        ctx.fillStyle = c;
+        ctx.beginPath();
+        ctx.arc(d[nombre][0], d[nombre][1], radio, 0, 7);
+        ctx.fill();
+        ctx.globalAlpha = 1;
+      }
+      // tobillo como anillo
+      ctx.beginPath();
+      ctx.arc(d.ankle[0], d.ankle[1], 10, 0, 7);
+      ctx.stroke();
+      // z del talon como texto
+      ctx.fillStyle = c;
+      ctx.font = '12px monospace';
+      ctx.fillText('z ' + d.heel[2].toFixed(3), d.heel[0] + 12, d.heel[1]);
+    }
+  };
+}
+conectar();
+</script>
+</body>
+</html>

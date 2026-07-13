@@ -1,19 +1,22 @@
 # RESULTADOS FASE 1 — Validación RTMW3D (pose 3D cuerpo completo)
 
-Fecha: 2026-07-12
-Máquina de prueba: laptop SIN GPU NVIDIA (solo Intel Iris Xe) → validación funcional en CPU.
-**Los FPS en GPU (GTX 1660) quedan pendientes para la PC de oficina** — ver `README.md` / `setup_oficina.ps1`.
+Fecha: 2026-07-12 (CPU laptop) / 2026-07-13 (GPU PC oficina)
+
+## ✅ FASE 1 APROBADA: 13.63 FPS promedio en GTX 1660 con RTMW3D-L
+
+Validación funcional en laptop CPU + medición real en PC de oficina con GTX 1660 y cámara ELP.
 
 ## Veredicto
 
 | Criterio | Resultado |
 |---|---|
-| Pipeline detector + RTMW3D-L corre | ✅ Sí (CPU) |
+| Pipeline detector + RTMW3D-L corre | ✅ Sí (CPU y CUDA) |
 | Esqueleto 3D generado (imagen de prueba) | ✅ Sí, 2D + 3D correctos |
-| Demo con webcam en vivo | ✅ Sí, 20/20 frames con detección |
-| Keypoints de pies (133 kpts, índices 17–22) | ✅ Presentes con nombre, XYZ y score |
-| FPS conocido | ✅ CPU: **0.30 FPS** (inviable, esperado). GPU: pendiente |
+| Demo con webcam en vivo (ELP, GTX 1660) | ✅ Sí, esqueleto completo + pies en tiempo real |
+| Keypoints de pies (133 kpts, índices 17–22) | ✅ Presentes y siguiendo los pies en vivo (2D y 3D) |
+| FPS ≥ 8 en GTX 1660 | ✅ **13.63 FPS promedio** (12.4–13.0 sostenido, 200 frames) |
 | Comando reproducible documentado | ✅ Abajo |
+| Estabilidad Z pie de frente vs perfil | ⚠️ Observación cualitativa pendiente (se evaluará en Fase 2 con datos numéricos del server) |
 
 ## Versiones verificadas (salida real)
 
@@ -66,10 +69,11 @@ En la PC de oficina: `--device cuda:0`, y elegir la ELP con `--cam-id N` (probar
 
 ## FPS medidos
 
-| Dispositivo | Modelo | FPS promedio |
-|---|---|---|
-| CPU (Iris Xe, laptop) | RTMW3D-L | **0.30 FPS** (20 frames, 66.9 s; rango 0.23–0.34) |
-| GTX 1660 | RTMW3D-L | **PENDIENTE** (mañana en PC de oficina) |
+| Dispositivo | Modelo | Modo | FPS promedio |
+|---|---|---|---|
+| CPU (Iris Xe, laptop) | RTMW3D-L | con visualización | **0.30 FPS** (20 frames) |
+| GTX 1660 (PC oficina) | RTMW3D-L | `--benchmark` (inferencia pura, ELP 640×480) | **13.63 FPS** (200 frames, 14.7 s; sostenido 12.4–13.0) |
+| GTX 1660 (PC oficina) | RTMW3D-L | con `--show` (matplotlib 3D) | ~0.5 FPS — el dibujado matplotlib es el cuello, NO el modelo. El server de Fase 2 no lo usa. |
 
 ## Observaciones de keypoints de pies
 
@@ -88,4 +92,7 @@ Formato COCO-WholeBody 133 kpts. Los pies son índices **17–22**: `left_big_to
 5. **numpy**: se mantuvo en 1.26.4 todo el proceso (re-pin al final de cada tanda de installs, verificado).
 6. **El README de rtmpose3d tiene rutas imprecisas**: el demo real es `demo\body3d_img2pose_demo.py` y el config del detector `demo\rtmdet_m_640-8xb32_coco-person.py` (verificado con listado recursivo). Checkpoints con las URLs de arriba.
 7. **El demo hardcodea `VideoCapture(0)`**: sin flag de cámara. Solución: copia en `bridge\body3d_cam_demo.py` con `--cam-id` (usa `CAP_DSHOW`, abre mucho más rápido en Windows), `--max-frames` y contador FPS impreso cada segundo + promedio final.
-8. **Esta máquina no es la del kiosco**: sin GTX 1660 ni cámara ELP (solo webcam integrada). CUDA False esperado. La validación GPU + ELP se hace en la PC de oficina con `setup_oficina.ps1`.
+8. **Esta máquina no es la del kiosco**: sin GTX 1660 ni cámara ELP (solo webcam integrada). CUDA False esperado. La validación GPU + ELP se hizo en la PC de oficina con `setup_oficina.ps1`.
+9. **ELP: `MF_E_HW_MFT_FAILED_START_STREAMING` (-1072875772) al abrir**: otra aplicación (u otro proceso python vivo de una corrida anterior) tenía la cámara acaparada. Solución: cerrar la app/proceso (`Stop-Process -Name python -Force` si quedó colgado) y reintentar. Los scripts además reintentan con MJPG/640×480 por si el problema es ancho de banda USB.
+10. **En la PC de oficina DSHOW no captura por índice**: solo MSMF funciona. Los scripts de `bridge\` prueban MSMF→DSHOW→ANY automáticamente.
+11. **El visualizador 3D del demo (matplotlib) limita a ~0.5 FPS** aunque la GPU infiera a 13: usar `--benchmark` para medir, y para producción el server de Fase 2 (sin matplotlib).
