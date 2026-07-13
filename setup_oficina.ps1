@@ -26,17 +26,27 @@ $PY = "$ROOT\.venv\Scripts\python.exe"
 & $PY -m pip install --upgrade pip
 
 # --- 2. torch 2.1.2+cu118 desde wheel local (descarga reanudable, pip NO reanuda) ---
-New-Item -ItemType Directory -Force "$ROOT\wheels" | Out-Null
-$TORCH_WHL = "$ROOT\wheels\torch-2.1.2+cu118-cp310-cp310-win_amd64.whl"
-$TV_WHL    = "$ROOT\wheels\torchvision-0.16.2+cu118-cp310-cp310-win_amd64.whl"
-if (-not (Test-Path $TORCH_WHL) -or (Get-Item $TORCH_WHL).Length -lt 2500MB) {
-    Write-Host "== Descargando torch (2.6 GB, reanudable)"
-    Retry-Curl "https://download.pytorch.org/whl/cu118/torch-2.1.2%2Bcu118-cp310-cp310-win_amd64.whl" $TORCH_WHL
+# Si el venv ya tiene torch 2.1.2 (p. ej. setup previo en esta PC), no se re-descarga.
+$torchOk = $false
+& $PY -c "import torch; assert torch.__version__.startswith('2.1.2')" 2>$null
+if ($LASTEXITCODE -eq 0) {
+    $torchOk = $true
+    Write-Host "== torch 2.1.2 ya presente en el venv, salto descarga de 2.6 GB"
 }
-if (-not (Test-Path $TV_WHL)) {
-    Retry-Curl "https://download.pytorch.org/whl/cu118/torchvision-0.16.2%2Bcu118-cp310-cp310-win_amd64.whl" $TV_WHL
+if (-not $torchOk) {
+    New-Item -ItemType Directory -Force "$ROOT\wheels" | Out-Null
+    $TORCH_WHL = "$ROOT\wheels\torch-2.1.2+cu118-cp310-cp310-win_amd64.whl"
+    $TV_WHL    = "$ROOT\wheels\torchvision-0.16.2+cu118-cp310-cp310-win_amd64.whl"
+    if (-not (Test-Path $TORCH_WHL) -or (Get-Item $TORCH_WHL).Length -lt 2500MB) {
+        Write-Host "== Descargando torch (2.6 GB, reanudable)"
+        Retry-Curl "https://download.pytorch.org/whl/cu118/torch-2.1.2%2Bcu118-cp310-cp310-win_amd64.whl" $TORCH_WHL
+    }
+    if (-not (Test-Path $TV_WHL)) {
+        Retry-Curl "https://download.pytorch.org/whl/cu118/torchvision-0.16.2%2Bcu118-cp310-cp310-win_amd64.whl" $TV_WHL
+    }
+    & $PY -m pip install $TORCH_WHL $TV_WHL
 }
-& $PY -m pip install $TORCH_WHL $TV_WHL "numpy==1.26.4" "wheel" "setuptools"
+& $PY -m pip install "numpy==1.26.4" "wheel" "setuptools"
 
 # --- 3. stack OpenMMLab (versiones clavadas a propósito, NO subir) ---
 & $PY -m pip install mmengine "mmcv==2.1.0" -f https://download.openmmlab.com/mmcv/dist/cu118/torch2.1/index.html
