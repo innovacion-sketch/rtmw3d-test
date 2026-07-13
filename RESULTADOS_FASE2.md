@@ -1,6 +1,10 @@
 # RESULTADOS FASE 2 — Puente WebSocket RTMW3D → espejo web
 
-Estado: server y cliente de prueba implementados; **medición en PC de oficina pendiente**.
+## ✅ FASE 2 APROBADA (2026-07-13, PC oficina GTX 1660 + ELP)
+
+`python bridge\server.py` corriendo + `test_client.html` mostrando los pies
+en vivo: **11.1 FPS de pipeline completo, 46 ms de latencia**, tracking de
+pies estable y sin alucinaciones según prueba en vivo.
 
 ## Cómo arrancar el server
 
@@ -41,13 +45,14 @@ La opacidad de cada punto refleja su score (pies ocultos → puntos casi transpa
 - `toe` = dedo gordo. Sin persona detectada: `left`/`right` = `null`.
 - Con varias personas en cuadro se publica solo la de bbox más grande (la más cercana).
 
-## Mediciones (pendientes de la PC de oficina)
+## Mediciones (PC oficina, GTX 1660, ELP 640×480)
 
 | Métrica | Valor |
 |---|---|
-| FPS pipeline completo (captura+inferencia+envío) | PENDIENTE (esperado ~13, igual que benchmark) |
-| Latencia server→navegador | PENDIENTE (esperado <5 ms en localhost) |
-| Estabilidad de Z pie de frente vs perfil | PENDIENTE — observar el valor `z` del talón en el test_client |
+| FPS pipeline completo (captura+inferencia+envío) | **11.1 FPS** (vs 13.6 de inferencia pura: el costo de captura+JSON+broadcast es ~2.5 FPS) |
+| Latencia captura→navegador | **46 ms** (incluye la inferencia del frame; sobra para efecto espejo) |
+| Tracking de pies en vivo | Sigue el pie correctamente, sin alucinaciones (prueba cualitativa en vivo) |
+| Estabilidad de Z pie de frente vs perfil | Pendiente de cuantificar — observar el valor `z` del talón en test_client durante la calibración del espejo |
 
 ## Notas de diseño
 
