@@ -52,7 +52,7 @@ La opacidad de cada punto refleja su score (pies ocultos → puntos casi transpa
 | FPS pipeline completo (captura+inferencia+envío) | **11.1 FPS** (vs 13.6 de inferencia pura: el costo de captura+JSON+broadcast es ~2.5 FPS) |
 | Latencia captura→navegador | **46 ms** (incluye la inferencia del frame; sobra para efecto espejo) |
 | Tracking de pies en vivo | Sigue el pie correctamente, sin alucinaciones (prueba cualitativa en vivo) |
-| Estabilidad de Z pie de frente vs perfil | Pendiente de cuantificar — observar el valor `z` del talón en test_client durante la calibración del espejo |
+| Estabilidad de Z | **Pie quieto: z estable (sin oscilación visible). Pie en movimiento: varía en el 2º decimal.** Con ambos pies apoyados a igual distancia, las z de ambos talones coinciden (~5.24 vs ~5.27). No se aprecia jitter que requiera filtrado; si el render 3D lo pidiera, un One-Euro suave sobraría. |
 
 ## Notas de diseño
 
