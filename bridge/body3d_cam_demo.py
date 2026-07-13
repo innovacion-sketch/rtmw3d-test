@@ -129,6 +129,12 @@ def parse_args():
         type=int,
         default=0,
         help='Detener tras N frames (0 = sin limite). Util para medir FPS.')
+    parser.add_argument(
+        '--benchmark',
+        action='store_true',
+        default=False,
+        help='Medir FPS de inferencia pura, SIN visualizacion (el dibujado '
+        '3D de matplotlib es lento y no existe en el server de produccion).')
 
     args = parser.parse_args()
     return args
@@ -273,7 +279,7 @@ def main():
 
     args = parse_args()
 
-    assert args.show or (args.output_root != '')
+    assert args.show or (args.output_root != '') or args.benchmark
     assert args.input != ''
     assert args.det_config is not None
     assert args.det_checkpoint is not None
@@ -420,7 +426,7 @@ def main():
                  pose_est_results_list=pose_est_results_list,
                  next_id=next_id,
                  visualize_frame=mmcv.bgr2rgb(frame),
-                 visualizer=visualizer)
+                 visualizer=None if args.benchmark else visualizer)
 
             infer_t_total += time.time() - infer_t0
             fps_win_frames += 1
