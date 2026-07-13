@@ -1,0 +1,446 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Sidhe · Espejo de pies 3D (RTMW3D + Three.js)</title>
+<style>
+  * { margin: 0; box-sizing: border-box; }
+  body {
+    background: #0f0f0f; color: #eee;
+    font-family: system-ui, sans-serif;
+    min-height: 100vh; display: flex; flex-direction: column;
+    align-items: center; gap: 10px; padding: 12px;
+  }
+  #bar { display: flex; gap: 14px; align-items: center; flex-wrap: wrap; font-size: 14px; }
+  #fps { color: #1d9e75; font-weight: 600; min-width: 170px; }
+  #conn { font-weight: 600; color: #e24b4a; }
+  #conn.ok { color: #1d9e75; }
+  button, select {
+    background: #222; color: #eee; border: 1px solid #444;
+    border-radius: 6px; padding: 7px 12px; cursor: pointer; font-size: 14px;
+  }
+  button:hover { background: #333; }
+  #stage {
+    position: relative; width: min(96vw, 900px);
+    background: #000; border-radius: 10px; overflow: hidden;
+  }
+  #stage.mirror { transform: scaleX(-1); }
+  #video, #overlay, #three { position: absolute; inset: 0; width: 100%; height: 100%; }
+  #video { position: relative; display: block; }
+  #status { opacity: 0.8; }
+  .hint { font-size: 13px; opacity: 0.6; max-width: 700px; text-align: center; line-height: 1.5; }
+  .catalog { display: flex; gap: 8px; flex-wrap: wrap; justify-content: center; }
+  .catalog button.active { background: #1d9e75; border-color: #1d9e75; }
+  #attract {
+    position: absolute; inset: 0; z-index: 10;
+    background: #0a0a0a; display: flex; align-items: center; justify-content: center;
+    transition: opacity 0.6s; pointer-events: none;
+  }
+  #attract.hidden { opacity: 0; }
+  #attractVideo { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; }
+  #attractMsg {
+    position: relative; z-index: 2; text-align: center; color: #fff;
+    text-shadow: 0 2px 20px rgba(0,0,0,0.8); font-family: system-ui, sans-serif;
+  }
+  #stage.mirror #attractMsg { transform: scaleX(-1); }
+  #stage.mirror #attractVideo { transform: scaleX(-1); }
+</style>
+</head>
+<body>
+  <div id="bar">
+    <span id="conn">● desconectado</span>
+    <label style="display:flex;align-items:center;gap:5px;">
+      <input type="checkbox" id="mirrorChk" checked /> Espejo
+    </label>
+    <label style="display:flex;align-items:center;gap:5px;">
+      <input type="checkbox" id="debugChk" /> Ver puntos
+    </label>
+    <button id="photoBtn">📸 Guardar foto</button>
+    <label style="display:flex;align-items:center;gap:5px;cursor:pointer;">
+      🎬 Video marca <input type="file" id="attractFile" accept="video/*" style="display:none;" />
+    </label>
+    <span id="fps">— FPS</span>
+  </div>
+  <div class="catalog" id="catalog"></div>
+  <div id="adjust" style="display:flex;gap:12px;flex-wrap:wrap;justify-content:center;font-size:12px;opacity:0.85;">
+    <label>Escala <input type="range" id="adjScale" min="0.5" max="3" step="0.05" value="1.35" /></label>
+    <label>Alto <input type="range" id="adjY" min="-0.3" max="0.3" step="0.01" value="-0.05" /></label>
+    <label>Frente <input type="range" id="adjX" min="-0.3" max="0.3" step="0.01" value="-0.08" /></label>
+    <label>Giro <input type="range" id="adjRot" min="-3.15" max="3.15" step="0.05" value="0" /></label>
+    <button id="resetAdj">Reset</button>
+    <button id="flipL">Voltear pie izq</button>
+  </div>
+  <span id="status">Conectando con el server RTMW3D…</span>
+  <div id="stage">
+    <canvas id="video"></canvas>
+    <canvas id="overlay"></canvas>
+    <canvas id="three"></canvas>
+    <div id="attract">
+      <video id="attractVideo" loop muted playsinline></video>
+      <div id="attractMsg">
+        <div style="font-size:2.5em;font-weight:700;color:#1d9e75;">SIDHE</div>
+        <div style="font-size:1.3em;margin-top:12px;">Acércate para probártelos 👟</div>
+      </div>
+    </div>
+  </div>
+  <p class="hint">
+    Encuadre: cámara a la altura de la rodilla apuntando a piernas/pies.
+    Párate a ~1-1.5 m. El tenis 3D se ancla entre talón y punta de cada pie.
+    Requiere <code>python bridge\server.py</code> corriendo (RTMW3D).
+  </p>
+
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.170.0/build/three.module.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.170.0/examples/jsm/"
+  }
+}
+</script>
+
+<script type="module">
+import * as THREE from "three";
+import { GLTFLoader } from "three/addons/loaders/GLTFLoader.js";
+
+// ===== FUENTE DE TRACKING: server RTMW3D por WebSocket =====
+const WS_URL = 'ws://localhost:8765';
+// Los scores de RTMW3D están calibrados distinto que la "visibility" de
+// MediaPipe: un pie bien visible da ~0.5-0.8, oculto da <0.3.
+const MIN_VIS = 0.35;
+
+// ===== CATÁLOGO DE TENIS =====
+// Copia los .glb a public/models/ junto a este archivo.
+const CATALOG = [
+  { id: 'converse',  name: 'Converse',   path: 'public/models/converseShoe.glb',  scale: 1.0 },
+  { id: 'converse2', name: 'Converse 2', path: 'public/models/converseShoe2.glb', scale: 1.0 },
+  { id: 'ballerina', name: 'Ballerina',  path: 'public/models/ballerinaShoe.glb', scale: 1.2 },
+];
+let currentShoe = CATALOG[0];
+
+// Ajustes en vivo del anclado (se controlan con los sliders)
+const ADJ = { scale: 1.35, offY: -0.05, offX: -0.08, rot: 0 };
+
+// ===== One Euro Filter (suaviza) =====
+class LowPass { constructor(){this.y=null;} filter(x,a){this.y=this.y===null?x:a*x+(1-a)*this.y;return this.y;} }
+function alpha(dt,c){const r=2*Math.PI*c*dt;return r/(r+1);}
+class OneEuro {
+  constructor(minC=1,beta=0,dC=1){this.minC=minC;this.beta=beta;this.dC=dC;this.xf=new LowPass();this.dxf=new LowPass();this.tPrev=null;this.xPrev=null;}
+  filter(x,t){
+    if(this.tPrev===null){this.tPrev=t;this.xPrev=x;this.xf.filter(x,1);this.dxf.filter(0,1);return x;}
+    const dt=Math.max((t-this.tPrev)/1000,1e-6);
+    const dx=(x-this.xPrev)/dt;
+    const edx=this.dxf.filter(dx,alpha(dt,this.dC));
+    const cutoff=this.minC+this.beta*Math.abs(edx);
+    const out=this.xf.filter(x,alpha(dt,cutoff));
+    this.tPrev=t;this.xPrev=x;return out;
+  }
+}
+const SMOOTH = { minCutoff: 0.35, beta: 0.15 };
+const smoothers = {};
+function sm(id, val, t){
+  if(!smoothers[id]) smoothers[id] = new OneEuro(SMOOTH.minCutoff, SMOOTH.beta);
+  return smoothers[id].filter(val, t);
+}
+function smoothLM(id, lm, t){
+  return { x: sm(id+'x', lm.x, t), y: sm(id+'y', lm.y, t), z: lm.z, visibility: lm.visibility };
+}
+
+// ===== DOM =====
+const videoCanvas = document.getElementById('video');
+const vctx = videoCanvas.getContext('2d');
+const overlay = document.getElementById('overlay');
+const octx = overlay.getContext('2d');
+const threeCanvas = document.getElementById('three');
+const statusEl = document.getElementById('status');
+const fpsEl = document.getElementById('fps');
+const connEl = document.getElementById('conn');
+const mirrorChk = document.getElementById('mirrorChk');
+const debugChk = document.getElementById('debugChk');
+const stage = document.getElementById('stage');
+const catalogEl = document.getElementById('catalog');
+const photoBtn = document.getElementById('photoBtn');
+const attractEl = document.getElementById('attract');
+const attractVideo = document.getElementById('attractVideo');
+const attractFile = document.getElementById('attractFile');
+
+// ===== Modo attract: máquina de estados con tiempos de gracia =====
+const ATTRACT = {
+  active: true,
+  enterDelayMs: 800,
+  exitDelayMs: 2500,
+  detectedSince: 0,
+  lostSince: 0,
+};
+function setAttract(on){
+  if(ATTRACT.active === on) return;
+  ATTRACT.active = on;
+  attractEl.classList.toggle('hidden', !on);
+  if(on){ attractVideo.play().catch(()=>{}); }
+}
+function updateAttract(hasFeet, now){
+  if(hasFeet){
+    ATTRACT.lostSince = 0;
+    if(!ATTRACT.detectedSince) ATTRACT.detectedSince = now;
+    if(ATTRACT.active && now - ATTRACT.detectedSince > ATTRACT.enterDelayMs){
+      setAttract(false);
+    }
+  } else {
+    ATTRACT.detectedSince = 0;
+    if(!ATTRACT.lostSince) ATTRACT.lostSince = now;
+    if(!ATTRACT.active && now - ATTRACT.lostSince > ATTRACT.exitDelayMs){
+      setAttract(true);
+    }
+  }
+}
+
+// ===== Three.js =====
+let renderer, scene, camera;
+let shoeLeft = null, shoeRight = null;
+const loader = new GLTFLoader();
+
+function initThree(w, h){
+  renderer = new THREE.WebGLRenderer({ canvas: threeCanvas, alpha: true, antialias: true, preserveDrawingBuffer: true });
+  renderer.setSize(w, h, false);
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+  renderer.outputColorSpace = THREE.SRGBColorSpace;
+  scene = new THREE.Scene();
+  camera = new THREE.OrthographicCamera(0, w, 0, h, -2000, 2000);
+  scene.add(new THREE.AmbientLight(0xffffff, 1.1));
+  const dir = new THREE.DirectionalLight(0xffffff, 2.2);
+  dir.position.set(0.4, -1, 1); scene.add(dir);
+}
+
+function loadShoePair(){
+  [shoeLeft, shoeRight].forEach(s => { if(s) scene.remove(s); });
+  shoeLeft = null; shoeRight = null;
+
+  loader.load(currentShoe.path, (gltf) => {
+    const base = gltf.scene;
+    const box = new THREE.Box3().setFromObject(base);
+    const c = box.getCenter(new THREE.Vector3());
+    const size = box.getSize(new THREE.Vector3());
+    base.position.sub(c);
+    const maxDim = Math.max(size.x, size.y, size.z);
+    base.scale.setScalar(1/maxDim);
+
+    const wrapL = new THREE.Group();
+    const modelL = base.clone();
+    modelL.scale.z *= -1;
+    wrapL.add(modelL);
+    wrapL.visible = false;
+    const wrapR = new THREE.Group(); wrapR.add(base.clone()); wrapR.visible = false;
+    scene.add(wrapL); scene.add(wrapR);
+    shoeLeft = wrapL; shoeRight = wrapR;
+    statusEl.textContent = `Modelo "${currentShoe.name}" cargado`;
+  }, undefined, (err) => {
+    statusEl.textContent = `No cargó ${currentShoe.path} — ¿copiaste el .glb? (y abre esta página por http, no file://)`;
+    console.error(err);
+  });
+}
+
+function updateShoe(group, ankle, heel, toe, w, h){
+  if(!group) return;
+  const ax = ankle.x*w, ay = ankle.y*h;
+  const hx = heel.x*w, hy = heel.y*h, tx = toe.x*w, ty = toe.y*h;
+
+  let cx = (hx+tx)/2, cy = (hy+ty)/2;
+  const len = Math.hypot(tx-hx, ty-hy);
+  if(len < 5){ group.visible = false; return; }
+
+  const a1 = Math.atan2(ty-hy, tx-hx);
+  const a2 = Math.atan2(ty-ay, tx-ax);
+  const angle = Math.atan2((Math.sin(a1)+Math.sin(a2))/2, (Math.cos(a1)+Math.cos(a2))/2);
+
+  cx += Math.cos(angle) * ADJ.offX * len - Math.sin(angle) * ADJ.offY * len;
+  cy += Math.sin(angle) * ADJ.offX * len + Math.cos(angle) * ADJ.offY * len;
+
+  group.visible = true;
+  group.position.set(cx, cy, 0);
+  group.scale.setScalar(len * ADJ.scale * currentShoe.scale);
+  group.rotation.z = -angle + ADJ.rot;
+}
+
+// ===== Adaptador RTMW3D: convierte el JSON del WS al formato que usaba MediaPipe =====
+// El server manda pixeles; aquí se normaliza a 0..1 como hacía MediaPipe.
+function lmDesdeWS(d, punto, w, h){
+  return {
+    x: d[punto][0] / w,
+    y: d[punto][1] / h,
+    z: d[punto][2],
+    visibility: d.score[punto],
+  };
+}
+
+function drawDebug(pts, w, h){
+  [['ankle','#3778dd'],['heel','#e24b4a'],['toe','#f0c000']].forEach(([k,color])=>{
+    const lm = pts[k];
+    if(!lm) return;
+    octx.fillStyle = color;
+    octx.beginPath(); octx.arc(lm.x*w, lm.y*h, 6, 0, Math.PI*2); octx.fill();
+  });
+}
+
+function processFoot(d, group, w, h, t, sideId){
+  if(!d){ if(group) group.visible=false; return false; }
+  let ankle = lmDesdeWS(d, 'ankle', w, h);
+  let heel  = lmDesdeWS(d, 'heel',  w, h);
+  let toe   = lmDesdeWS(d, 'toe',   w, h);
+  const vis = Math.min(ankle.visibility, heel.visibility, toe.visibility);
+  if(vis < MIN_VIS){ if(group) group.visible=false; return false; }
+  ankle = smoothLM(sideId+'_ankle', ankle, t);
+  heel  = smoothLM(sideId+'_heel',  heel,  t);
+  toe   = smoothLM(sideId+'_toe',   toe,   t);
+  updateShoe(group, ankle, heel, toe, w, h);
+  if(debugChk.checked) drawDebug({ankle, heel, toe}, w, h);
+  return true;
+}
+
+// ===== WebSocket: reemplaza a MediaPipe + getUserMedia =====
+let frames = 0, lastFps = performance.now();
+let serverFps = 0;
+const frameImg = new Image();
+let ultimoMsg = null;
+
+function onMensaje(m){
+  const w = m.w, h = m.h;
+  if(videoCanvas.width !== w || videoCanvas.height !== h){
+    videoCanvas.width = w; videoCanvas.height = h;
+    overlay.width = w; overlay.height = h;
+    threeCanvas.width = w; threeCanvas.height = h;
+    stage.style.aspectRatio = `${w} / ${h}`;
+    if(!renderer){ initThree(w, h); loadShoePair(); }
+    else { renderer.setSize(w,h,false); camera.right=w; camera.bottom=h; camera.updateProjectionMatrix(); }
+  }
+  serverFps = m.fps;
+
+  const procesar = () => {
+    if(frameImg.src) vctx.drawImage(frameImg, 0, 0, w, h);
+    octx.clearRect(0,0,w,h);
+    const t = performance.now();
+    const okL = processFoot(m.left,  shoeLeft,  w, h, t, 'left');
+    const okR = processFoot(m.right, shoeRight, w, h, t, 'right');
+    updateAttract(okL || okR, t);
+    statusEl.textContent = ATTRACT.active ? 'Modo atracción'
+      : (okL || okR ? 'Detectando…' : 'Sin pies visibles');
+    if(renderer) renderer.render(scene, camera);
+    frames++;
+    const now = performance.now();
+    if(now-lastFps>=1000){
+      fpsEl.textContent = `${frames} FPS (server ${serverFps})`;
+      frames=0; lastFps=now;
+    }
+  };
+
+  if(m.img){
+    frameImg.onload = procesar;
+    frameImg.src = m.img;   // JPEG del server (la camara es exclusiva de el)
+  } else {
+    procesar();
+  }
+}
+
+function conectar(){
+  const ws = new WebSocket(WS_URL);
+  ws.onopen = () => {
+    connEl.textContent = '● conectado'; connEl.className = 'ok';
+    statusEl.textContent = 'Conectado al server RTMW3D';
+  };
+  ws.onclose = () => {
+    connEl.textContent = '● desconectado'; connEl.className = '';
+    statusEl.textContent = 'Server no disponible — ¿está corriendo bridge\\server.py? Reintentando…';
+    if(shoeLeft) shoeLeft.visible=false;
+    if(shoeRight) shoeRight.visible=false;
+    setTimeout(conectar, 1500);
+  };
+  ws.onmessage = ev => { ultimoMsg = JSON.parse(ev.data); onMensaje(ultimoMsg); };
+}
+
+// ===== Captura de foto: compone video + tenis 3D en un canvas y descarga =====
+function takePhoto(){
+  if(!ultimoMsg){ statusEl.textContent = 'Aún no llega video del server'; return; }
+  const w = overlay.width, h = overlay.height;
+  if(renderer) renderer.render(scene, camera);
+  const out = document.createElement('canvas');
+  out.width = w; out.height = h;
+  const ctx = out.getContext('2d');
+
+  if(mirrorChk.checked){ ctx.save(); ctx.translate(w, 0); ctx.scale(-1, 1); }
+
+  ctx.drawImage(videoCanvas, 0, 0, w, h);
+  ctx.drawImage(overlay, 0, 0, w, h);
+  ctx.drawImage(threeCanvas, 0, 0, w, h);
+
+  if(mirrorChk.checked){ ctx.restore(); }
+
+  ctx.fillStyle = 'rgba(29,158,117,0.9)';
+  ctx.font = `bold ${Math.round(h*0.04)}px system-ui, sans-serif`;
+  ctx.textAlign = 'right';
+  ctx.fillText('SIDHE', w - 20, h - 20);
+
+  out.toBlob((blob)=>{
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `sidhe-tryon-${Date.now()}.png`;
+    a.click();
+    URL.revokeObjectURL(url);
+    statusEl.textContent = 'Foto guardada ✓';
+  }, 'image/png');
+}
+
+// Catálogo UI
+function buildCatalog(){
+  catalogEl.innerHTML = '';
+  CATALOG.forEach((shoe, i) => {
+    const b = document.createElement('button');
+    b.textContent = shoe.name;
+    if(i===0) b.classList.add('active');
+    b.onclick = () => {
+      currentShoe = shoe;
+      catalogEl.querySelectorAll('button').forEach(x=>x.classList.remove('active'));
+      b.classList.add('active');
+      if(renderer) loadShoePair();
+    };
+    catalogEl.appendChild(b);
+  });
+}
+
+photoBtn.addEventListener('click', takePhoto);
+
+attractFile.addEventListener('change', (e) => {
+  const file = e.target.files[0];
+  if(!file) return;
+  const url = URL.createObjectURL(file);
+  attractVideo.src = url;
+  attractVideo.play().catch(()=>{});
+  statusEl.textContent = 'Video de marca cargado';
+});
+
+document.getElementById('adjScale').addEventListener('input', e => ADJ.scale = parseFloat(e.target.value));
+document.getElementById('adjY').addEventListener('input', e => ADJ.offY = parseFloat(e.target.value));
+document.getElementById('adjX').addEventListener('input', e => ADJ.offX = parseFloat(e.target.value));
+document.getElementById('adjRot').addEventListener('input', e => ADJ.rot = parseFloat(e.target.value));
+document.getElementById('resetAdj').addEventListener('click', () => {
+  ADJ.scale = 1.35; ADJ.offY = -0.05; ADJ.offX = -0.08; ADJ.rot = 0;
+  document.getElementById('adjScale').value = 1.35;
+  document.getElementById('adjY').value = -0.05;
+  document.getElementById('adjX').value = -0.08;
+  document.getElementById('adjRot').value = 0;
+});
+document.getElementById('flipL').addEventListener('click', () => {
+  if(!shoeLeft) return;
+  const m = shoeLeft.children[0];
+  window._flipState = ((window._flipState ?? 0) + 1) % 3;
+  m.scale.set(Math.abs(m.scale.x), Math.abs(m.scale.y), Math.abs(m.scale.z));
+  if(window._flipState === 0) m.scale.z *= -1;
+  else if(window._flipState === 1) m.scale.x *= -1;
+  statusEl.textContent = 'Volteo pie izq: ' + ['Z','X','ninguno'][window._flipState];
+});
+mirrorChk.addEventListener('change', ()=> stage.classList.toggle('mirror', mirrorChk.checked));
+stage.classList.toggle('mirror', mirrorChk.checked);
+buildCatalog();
+conectar();   // arranca solo: modo kiosco, sin botón de inicio
+</script>
+</body>
+</html>

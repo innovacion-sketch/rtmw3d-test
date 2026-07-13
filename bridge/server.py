@@ -16,6 +16,7 @@ Uso (venv activado):   python bridge\\server.py
 Detener: Ctrl+C
 """
 import asyncio
+import base64
 import json
 import sys
 import threading
@@ -33,6 +34,10 @@ WS_HOST = "localhost"
 WS_PORT = 8765
 DEVICE = "cuda:0"   # "cpu" para probar sin GPU
 BBOX_THR = 0.5      # umbral del detector de personas
+SEND_VIDEO = True   # enviar el frame JPEG en cada mensaje (campo "img").
+                    # Necesario para el espejo web: la camara es exclusiva
+                    # del server, el navegador no puede abrirla a la vez.
+JPEG_QUALITY = 70
 # --------------------------------------------------
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -150,6 +155,13 @@ def inference_loop(loop):
                     kpts2d = kpts3d[:, :2]
                 msg["left"] = lado_json(kpts3d, kpts2d, scores, "left")
                 msg["right"] = lado_json(kpts3d, kpts2d, scores, "right")
+
+        if SEND_VIDEO and CLIENTS:
+            ok_enc, jpg = cv2.imencode(
+                ".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, JPEG_QUALITY])
+            if ok_enc:
+                msg["img"] = ("data:image/jpeg;base64," +
+                              base64.b64encode(jpg).decode("ascii"))
 
         data = json.dumps(msg)
         loop.call_soon_threadsafe(publicar, data)
