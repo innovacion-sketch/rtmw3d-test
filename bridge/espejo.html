@@ -140,14 +140,17 @@ class OneEuro {
     this.tPrev=t;this.xPrev=x;return out;
   }
 }
-const SMOOTH = { minCutoff: 0.35, beta: 0.15 };
+// Calibrado para RTMW3D a ~11 FPS: los puntos ya son estables, el filtro
+// solo pule. (Los valores viejos 0.35/0.15 eran para MediaPipe a 30 FPS y
+// metian ~0.5 s de retraso: el tenis "flotaba" detras del pie al moverse.)
+const SMOOTH = { minCutoff: 2.0, beta: 0.8 };
 const smoothers = {};
 function sm(id, val, t){
   if(!smoothers[id]) smoothers[id] = new OneEuro(SMOOTH.minCutoff, SMOOTH.beta);
   return smoothers[id].filter(val, t);
 }
 function smoothLM(id, lm, t){
-  return { x: sm(id+'x', lm.x, t), y: sm(id+'y', lm.y, t), z: lm.z, visibility: lm.visibility };
+  return { x: sm(id+'x', lm.x, t), y: sm(id+'y', lm.y, t), z: sm(id+'z', lm.z, t), visibility: lm.visibility };
 }
 
 // ===== DOM =====
@@ -243,28 +246,31 @@ function loadShoePair(){
   });
 }
 
-function updateShoe(group, ankle, heel, toe, w, h){
+function updateShoe(group, heel, toe, smallToe, w, h){
   if(!group) return;
 
   // Puntos en 3D: x,y en pixeles de pantalla; z de RTMW3D convertida a
   // "pixeles" con zGain, relativa al promedio local (solo importa el delta).
-  const zRef = (heel.z + toe.z + ankle.z) / 3;
+  const zRef = (heel.z + toe.z + smallToe.z) / 3;
   const p3 = lm => new THREE.Vector3(
     lm.x*w, lm.y*h, (zRef - lm.z) * ADJ.zGain);
-  const H = p3(heel), T = p3(toe), A = p3(ankle);
+  const H = p3(heel), T = p3(toe), S = p3(smallToe);
 
-  // Eje largo del pie (talon -> punta) en 3D
-  const fwd = T.clone().sub(H);
+  // Eje largo del pie: talon -> centro de los dedos, en 3D
+  const M = T.clone().add(S).multiplyScalar(0.5);
+  const fwd = M.clone().sub(H);
   const len = fwd.length();
   // Limites de sanidad: descarta frames glitch (tenis gigante/enano)
   if(len < 5 || len > h*0.6){ group.visible = false; return; }
   fwd.normalize();
 
-  // Eje "arriba" del pie: talon -> tobillo, ortogonalizado contra fwd
-  const up = A.clone().sub(H);
-  up.addScaledVector(fwd, -up.dot(fwd));
+  // "Arriba" real del pie: normal del plano de la planta
+  // (dedo gordo -> dedo chico) x (talon -> dedos)
+  const sideRaw = S.clone().sub(T);
+  const up = new THREE.Vector3().crossVectors(sideRaw, fwd);
   if(up.lengthSq() < 1e-4) up.set(0, -1, 0);  // fallback: arriba de pantalla
   up.normalize();
+  if(up.y > 0) up.negate();   // en pantalla, arriba = -y (vale ambos pies)
 
   // Eje ancho (completa la base ortonormal derecha)
   const side = new THREE.Vector3().crossVectors(fwd, up);
@@ -278,8 +284,8 @@ function updateShoe(group, ankle, heel, toe, w, h){
     group.quaternion.premultiply(qz);
   }
 
-  // Centro entre talon y punta + offsets a lo largo/alto del pie en pantalla
-  let cx = (H.x + T.x)/2, cy = (H.y + T.y)/2;
+  // Centro entre talon y dedos + offsets a lo largo/alto del pie en pantalla
+  let cx = (H.x + M.x)/2, cy = (H.y + M.y)/2;
   const angle = Math.atan2(fwd.y, fwd.x);
   cx += Math.cos(angle) * ADJ.offX * len - Math.sin(angle) * ADJ.offY * len;
   cy += Math.sin(angle) * ADJ.offX * len + Math.cos(angle) * ADJ.offY * len;
@@ -311,15 +317,17 @@ function drawDebug(pts, w, h){
 
 function processFoot(d, group, w, h, t, sideId){
   if(!d){ if(group) group.visible=false; return false; }
-  let ankle = lmDesdeWS(d, 'ankle', w, h);
-  let heel  = lmDesdeWS(d, 'heel',  w, h);
-  let toe   = lmDesdeWS(d, 'toe',   w, h);
+  let ankle    = lmDesdeWS(d, 'ankle', w, h);
+  let heel     = lmDesdeWS(d, 'heel',  w, h);
+  let toe      = lmDesdeWS(d, 'toe',   w, h);
+  let smallToe = lmDesdeWS(d, 'small_toe', w, h);
+  // la visibilidad NO depende del dedo chico (queda oculto en vista de perfil)
   const vis = Math.min(ankle.visibility, heel.visibility, toe.visibility);
   if(vis < MIN_VIS){ if(group) group.visible=false; return false; }
-  ankle = smoothLM(sideId+'_ankle', ankle, t);
-  heel  = smoothLM(sideId+'_heel',  heel,  t);
-  toe   = smoothLM(sideId+'_toe',   toe,   t);
-  updateShoe(group, ankle, heel, toe, w, h);
+  heel     = smoothLM(sideId+'_heel',  heel,  t);
+  toe      = smoothLM(sideId+'_toe',   toe,   t);
+  smallToe = smoothLM(sideId+'_stoe',  smallToe, t);
+  updateShoe(group, heel, toe, smallToe, w, h);
   if(debugChk.checked) drawDebug({ankle, heel, toe}, w, h);
   return true;
 }
