@@ -68,7 +68,7 @@
     <label>Alto <input type="range" id="adjY" min="-0.3" max="0.3" step="0.01" value="-0.05" /></label>
     <label>Frente <input type="range" id="adjX" min="-0.3" max="0.3" step="0.01" value="-0.08" /></label>
     <label>Giro <input type="range" id="adjRot" min="-3.15" max="3.15" step="0.05" value="0" /></label>
-    <label>Perspectiva <input type="range" id="adjZGain" min="-600" max="600" step="10" value="200" /></label>
+    <label>Perspectiva <input type="range" id="adjZGain" min="-600" max="600" step="10" value="120" /></label>
     <label>Cabeceo <input type="range" id="adjPitch" min="0" max="1" step="0.05" value="0.35" /></label>
     <button id="resetAdj">Reset</button>
     <button id="flipL">Voltear pie izq</button>
@@ -126,7 +126,7 @@ let currentShoe = CATALOG[0];
 // Perspectiva; si el tenis gira al reves, moverlo a negativo.
 // pitch: atenua el cabeceo aparente (de frente, la camara baja "inclina"
 // el pie en pantalla aunque este plano sobre el piso)
-const ADJ = { scale: 1.35, offY: -0.05, offX: -0.08, rot: 0, zGain: 200, pitch: 0.35 };
+const ADJ = { scale: 1.35, offY: -0.05, offX: -0.08, rot: 0, zGain: 120, pitch: 0.35 };
 
 // ===== One Euro Filter (suaviza) =====
 class LowPass { constructor(){this.y=null;} filter(x,a){this.y=this.y===null?x:a*x+(1-a)*this.y;return this.y;} }
@@ -473,12 +473,12 @@ document.getElementById('adjRot').addEventListener('input', e => ADJ.rot = parse
 document.getElementById('adjZGain').addEventListener('input', e => ADJ.zGain = parseFloat(e.target.value));
 document.getElementById('adjPitch').addEventListener('input', e => ADJ.pitch = parseFloat(e.target.value));
 document.getElementById('resetAdj').addEventListener('click', () => {
-  ADJ.scale = 1.35; ADJ.offY = -0.05; ADJ.offX = -0.08; ADJ.rot = 0; ADJ.zGain = 200; ADJ.pitch = 0.35;
+  ADJ.scale = 1.35; ADJ.offY = -0.05; ADJ.offX = -0.08; ADJ.rot = 0; ADJ.zGain = 120; ADJ.pitch = 0.35;
   document.getElementById('adjScale').value = 1.35;
   document.getElementById('adjY').value = -0.05;
   document.getElementById('adjX').value = -0.08;
   document.getElementById('adjRot').value = 0;
-  document.getElementById('adjZGain').value = 200;
+  document.getElementById('adjZGain').value = 120;
   document.getElementById('adjPitch').value = 0.35;
 });
 document.getElementById('flipL').addEventListener('click', () => {
