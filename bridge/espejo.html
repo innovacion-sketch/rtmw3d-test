@@ -246,7 +246,7 @@ function loadShoePair(){
   });
 }
 
-function updateShoe(group, heel, toe, smallToe, w, h){
+function updateShoe(group, ankle, heel, toe, smallToe, w, h){
   if(!group) return;
 
   // Puntos en 3D: x,y en pixeles de pantalla; z de RTMW3D convertida a
@@ -254,7 +254,7 @@ function updateShoe(group, heel, toe, smallToe, w, h){
   const zRef = (heel.z + toe.z + smallToe.z) / 3;
   const p3 = lm => new THREE.Vector3(
     lm.x*w, lm.y*h, (zRef - lm.z) * ADJ.zGain);
-  const H = p3(heel), T = p3(toe), S = p3(smallToe);
+  const H = p3(heel), T = p3(toe), S = p3(smallToe), A = p3(ankle);
 
   // Eje largo del pie: talon -> centro de los dedos, en 3D
   const M = T.clone().add(S).multiplyScalar(0.5);
@@ -264,13 +264,24 @@ function updateShoe(group, heel, toe, smallToe, w, h){
   if(len < 5 || len > h*0.6){ group.visible = false; return; }
   fwd.normalize();
 
-  // "Arriba" real del pie: normal del plano de la planta
-  // (dedo gordo -> dedo chico) x (talon -> dedos)
+  // "Arriba" del pie: normal del plano de la planta (gordo->chico x talon->dedos).
+  // Si los dedos estan casi juntos en pantalla (pie de perfil perfecto), la
+  // normal es ruidosa: caer al metodo tobillo (talon->tobillo ortogonalizado).
   const sideRaw = S.clone().sub(T);
-  const up = new THREE.Vector3().crossVectors(sideRaw, fwd);
+  let up;
+  if(sideRaw.length() < len * 0.15){
+    up = A.clone().sub(H);
+    up.addScaledVector(fwd, -up.dot(fwd));
+  } else {
+    up = new THREE.Vector3().crossVectors(sideRaw, fwd);
+  }
   if(up.lengthSq() < 1e-4) up.set(0, -1, 0);  // fallback: arriba de pantalla
   up.normalize();
-  if(up.y > 0) up.negate();   // en pantalla, arriba = -y (vale ambos pies)
+  // Desambiguar el signo con el tobillo: la pierna SIEMPRE esta arriba del
+  // pie, en cualquier angulo (la heuristica de pantalla fallaba de frente
+  // y volteaba el tenis mostrando la suela).
+  const legDir = A.clone().sub(H);
+  if(up.dot(legDir) < 0) up.negate();
 
   // Eje ancho (completa la base ortonormal derecha)
   const side = new THREE.Vector3().crossVectors(fwd, up);
@@ -324,10 +335,11 @@ function processFoot(d, group, w, h, t, sideId){
   // la visibilidad NO depende del dedo chico (queda oculto en vista de perfil)
   const vis = Math.min(ankle.visibility, heel.visibility, toe.visibility);
   if(vis < MIN_VIS){ if(group) group.visible=false; return false; }
+  ankle    = smoothLM(sideId+'_ankle', ankle, t);
   heel     = smoothLM(sideId+'_heel',  heel,  t);
   toe      = smoothLM(sideId+'_toe',   toe,   t);
   smallToe = smoothLM(sideId+'_stoe',  smallToe, t);
-  updateShoe(group, heel, toe, smallToe, w, h);
+  updateShoe(group, ankle, heel, toe, smallToe, w, h);
   if(debugChk.checked) drawDebug({ankle, heel, toe}, w, h);
   return true;
 }
