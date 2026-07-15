@@ -69,6 +69,7 @@
     <label>Frente <input type="range" id="adjX" min="-0.3" max="0.3" step="0.01" value="-0.08" /></label>
     <label>Giro <input type="range" id="adjRot" min="-3.15" max="3.15" step="0.05" value="0" /></label>
     <label>Perspectiva <input type="range" id="adjZGain" min="-600" max="600" step="10" value="200" /></label>
+    <label>Cabeceo <input type="range" id="adjPitch" min="0" max="1" step="0.05" value="0.35" /></label>
     <button id="resetAdj">Reset</button>
     <button id="flipL">Voltear pie izq</button>
   </div>
@@ -123,7 +124,9 @@ let currentShoe = CATALOG[0];
 // zGain: convierte la profundidad z de RTMW3D a "pixeles" para inclinar el
 // tenis cuando el pie apunta a la camara. Se calibra con el slider
 // Perspectiva; si el tenis gira al reves, moverlo a negativo.
-const ADJ = { scale: 1.35, offY: -0.05, offX: -0.08, rot: 0, zGain: 200 };
+// pitch: atenua el cabeceo aparente (de frente, la camara baja "inclina"
+// el pie en pantalla aunque este plano sobre el piso)
+const ADJ = { scale: 1.35, offY: -0.05, offX: -0.08, rot: 0, zGain: 200, pitch: 0.35 };
 
 // ===== One Euro Filter (suaviza) =====
 class LowPass { constructor(){this.y=null;} filter(x,a){this.y=this.y===null?x:a*x+(1-a)*this.y;return this.y;} }
@@ -246,7 +249,7 @@ function loadShoePair(){
   });
 }
 
-function updateShoe(group, ankle, heel, toe, smallToe, w, h){
+function updateShoe(group, sideId, heel, toe, smallToe, w, h, t){
   if(!group) return;
 
   // Puntos en 3D: x,y en pixeles de pantalla; z de RTMW3D convertida a
@@ -254,40 +257,35 @@ function updateShoe(group, ankle, heel, toe, smallToe, w, h){
   const zRef = (heel.z + toe.z + smallToe.z) / 3;
   const p3 = lm => new THREE.Vector3(
     lm.x*w, lm.y*h, (zRef - lm.z) * ADJ.zGain);
-  const H = p3(heel), T = p3(toe), S = p3(smallToe), A = p3(ankle);
+  const H = p3(heel), T = p3(toe), S = p3(smallToe);
 
   // Eje largo del pie: talon -> centro de los dedos, en 3D
   const M = T.clone().add(S).multiplyScalar(0.5);
   const fwd = M.clone().sub(H);
-  const len = fwd.length();
+  const rawLen = fwd.length();
   // Limites de sanidad: descarta frames glitch (tenis gigante/enano)
-  if(len < 5 || len > h*0.6){ group.visible = false; return; }
+  if(rawLen < 5 || rawLen > h*0.6){ group.visible = false; return; }
   fwd.normalize();
 
-  // "Arriba" del pie: normal del plano de la planta (gordo->chico x talon->dedos).
-  // Si los dedos estan casi juntos en pantalla (pie de perfil perfecto), la
-  // normal es ruidosa: caer al metodo tobillo (talon->tobillo ortogonalizado).
-  const sideRaw = S.clone().sub(T);
-  let up;
-  if(sideRaw.length() < len * 0.15){
-    up = A.clone().sub(H);
-    up.addScaledVector(fwd, -up.dot(fwd));
-  } else {
-    up = new THREE.Vector3().crossVectors(sideRaw, fwd);
-  }
-  if(up.lengthSq() < 1e-4) up.set(0, -1, 0);  // fallback: arriba de pantalla
-  up.normalize();
-  // Desambiguar el signo con el tobillo: la pierna SIEMPRE esta arriba del
-  // pie, en cualquier angulo (la heuristica de pantalla fallaba de frente
-  // y volteaba el tenis mostrando la suela).
-  const legDir = A.clone().sub(H);
-  if(up.dot(legDir) < 0) up.negate();
+  // Modelo kiosco: el pie esta sobre el piso. La orientacion se descompone
+  // en RUMBO (giro sobre el piso: libre) + CABECEO (atenuado con ADJ.pitch,
+  // porque de frente la inclinacion de la camara "inclina" el pie en
+  // pantalla aunque este plano). El tenis nunca rueda: suela al piso.
+  const horiz = Math.hypot(fwd.x, fwd.z);
+  const rumbo = Math.atan2(fwd.z, fwd.x);
+  const cabeceo = Math.atan2(-fwd.y, horiz) * ADJ.pitch;
+  const f = new THREE.Vector3(
+    Math.cos(rumbo) * Math.cos(cabeceo),
+    -Math.sin(cabeceo),
+    Math.sin(rumbo) * Math.cos(cabeceo));
 
-  // Eje ancho (completa la base ortonormal derecha)
-  const side = new THREE.Vector3().crossVectors(fwd, up);
+  // "Arriba" = vertical de pantalla ortogonalizada contra el eje del pie
+  const up = new THREE.Vector3(0, -1, 0);
+  up.addScaledVector(f, -up.dot(f)).normalize();
+  const side = new THREE.Vector3().crossVectors(f, up);
 
   // El GLB tiene: largo=X, arriba=Y, ancho=Z
-  const basis = new THREE.Matrix4().makeBasis(fwd, up, side);
+  const basis = new THREE.Matrix4().makeBasis(f, up, side);
   group.quaternion.setFromRotationMatrix(basis);
   if(ADJ.rot !== 0){
     const qz = new THREE.Quaternion()
@@ -295,9 +293,13 @@ function updateShoe(group, ankle, heel, toe, smallToe, w, h){
     group.quaternion.premultiply(qz);
   }
 
+  // Escala suavizada aparte: la longitud instantanea bombea con el ruido
+  // de z cuando el pie apunta a la camara
+  const len = sm(sideId + '_len', rawLen, t);
+
   // Centro entre talon y dedos + offsets a lo largo/alto del pie en pantalla
   let cx = (H.x + M.x)/2, cy = (H.y + M.y)/2;
-  const angle = Math.atan2(fwd.y, fwd.x);
+  const angle = Math.atan2(M.y - H.y, M.x - H.x);
   cx += Math.cos(angle) * ADJ.offX * len - Math.sin(angle) * ADJ.offY * len;
   cy += Math.sin(angle) * ADJ.offX * len + Math.cos(angle) * ADJ.offY * len;
 
@@ -335,11 +337,10 @@ function processFoot(d, group, w, h, t, sideId){
   // la visibilidad NO depende del dedo chico (queda oculto en vista de perfil)
   const vis = Math.min(ankle.visibility, heel.visibility, toe.visibility);
   if(vis < MIN_VIS){ if(group) group.visible=false; return false; }
-  ankle    = smoothLM(sideId+'_ankle', ankle, t);
   heel     = smoothLM(sideId+'_heel',  heel,  t);
   toe      = smoothLM(sideId+'_toe',   toe,   t);
   smallToe = smoothLM(sideId+'_stoe',  smallToe, t);
-  updateShoe(group, ankle, heel, toe, smallToe, w, h);
+  updateShoe(group, sideId, heel, toe, smallToe, w, h, t);
   if(debugChk.checked) drawDebug({ankle, heel, toe}, w, h);
   return true;
 }
@@ -470,13 +471,15 @@ document.getElementById('adjY').addEventListener('input', e => ADJ.offY = parseF
 document.getElementById('adjX').addEventListener('input', e => ADJ.offX = parseFloat(e.target.value));
 document.getElementById('adjRot').addEventListener('input', e => ADJ.rot = parseFloat(e.target.value));
 document.getElementById('adjZGain').addEventListener('input', e => ADJ.zGain = parseFloat(e.target.value));
+document.getElementById('adjPitch').addEventListener('input', e => ADJ.pitch = parseFloat(e.target.value));
 document.getElementById('resetAdj').addEventListener('click', () => {
-  ADJ.scale = 1.35; ADJ.offY = -0.05; ADJ.offX = -0.08; ADJ.rot = 0; ADJ.zGain = 200;
+  ADJ.scale = 1.35; ADJ.offY = -0.05; ADJ.offX = -0.08; ADJ.rot = 0; ADJ.zGain = 200; ADJ.pitch = 0.35;
   document.getElementById('adjScale').value = 1.35;
   document.getElementById('adjY').value = -0.05;
   document.getElementById('adjX').value = -0.08;
   document.getElementById('adjRot').value = 0;
-  document.getElementById('adjZGain').value = 150;
+  document.getElementById('adjZGain').value = 200;
+  document.getElementById('adjPitch').value = 0.35;
 });
 document.getElementById('flipL').addEventListener('click', () => {
   if(!shoeLeft) return;
