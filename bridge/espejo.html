@@ -66,10 +66,10 @@
   <div id="adjust" style="display:flex;gap:12px;flex-wrap:wrap;justify-content:center;font-size:12px;opacity:0.85;">
     <label>Escala <input type="range" id="adjScale" min="0.5" max="3" step="0.05" value="1.35" /></label>
     <label>Alto <input type="range" id="adjY" min="-0.3" max="0.3" step="0.01" value="-0.05" /></label>
-    <label>Frente <input type="range" id="adjX" min="-0.3" max="0.3" step="0.01" value="-0.08" /></label>
+    <label>Frente <input type="range" id="adjX" min="-0.3" max="0.3" step="0.01" value="-0.02" /></label>
     <label>Giro <input type="range" id="adjRot" min="-3.15" max="3.15" step="0.05" value="0" /></label>
     <label>Perspectiva <input type="range" id="adjZGain" min="-600" max="600" step="10" value="120" /></label>
-    <label>Cabeceo <input type="range" id="adjPitch" min="0" max="1" step="0.05" value="0.35" /></label>
+    <label>Cabeceo <input type="range" id="adjPitch" min="0" max="0.8" step="0.05" value="0.3" /></label>
     <button id="resetAdj">Reset</button>
     <button id="flipL">Voltear pie izq</button>
   </div>
@@ -124,9 +124,10 @@ let currentShoe = CATALOG[0];
 // zGain: convierte la profundidad z de RTMW3D a "pixeles" para inclinar el
 // tenis cuando el pie apunta a la camara. Se calibra con el slider
 // Perspectiva; si el tenis gira al reves, moverlo a negativo.
-// pitch: atenua el cabeceo aparente (de frente, la camara baja "inclina"
-// el pie en pantalla aunque este plano sobre el piso)
-const ADJ = { scale: 1.35, offY: -0.05, offX: -0.08, rot: 0, zGain: 120, pitch: 0.35 };
+// pitch: ZONA MUERTA del cabeceo en radianes. La camara baja "inclina" el
+// pie en pantalla aunque este plano (~0.3 rad); se descuenta ese sesgo y lo
+// que sobre (pie en puntas de verdad) si inclina el tenis.
+const ADJ = { scale: 1.35, offY: -0.05, offX: -0.02, rot: 0, zGain: 120, pitch: 0.3 };
 
 // ===== One Euro Filter (suaviza) =====
 class LowPass { constructor(){this.y=null;} filter(x,a){this.y=this.y===null?x:a*x+(1-a)*this.y;return this.y;} }
@@ -273,7 +274,11 @@ function updateShoe(group, sideId, heel, toe, smallToe, w, h, t){
   // pantalla aunque este plano). El tenis nunca rueda: suela al piso.
   const horiz = Math.hypot(fwd.x, fwd.z);
   const rumbo = Math.atan2(fwd.z, fwd.x);
-  const cabeceo = Math.atan2(-fwd.y, horiz) * ADJ.pitch;
+  // Zona muerta: se descuenta el cabeceo aparente que mete la inclinacion
+  // de la camara (ADJ.pitch rad); lo que sobra es cabeceo real (pie en puntas)
+  const rawPitch = Math.atan2(-fwd.y, horiz);
+  const cabeceo = Math.sign(rawPitch) *
+    Math.max(0, Math.abs(rawPitch) - ADJ.pitch);
   const f = new THREE.Vector3(
     Math.cos(rumbo) * Math.cos(cabeceo),
     -Math.sin(cabeceo),
@@ -286,11 +291,11 @@ function updateShoe(group, sideId, heel, toe, smallToe, w, h, t){
 
   // El GLB tiene: largo=X, arriba=Y, ancho=Z
   const basis = new THREE.Matrix4().makeBasis(f, up, side);
-  group.quaternion.setFromRotationMatrix(basis);
+  const q = new THREE.Quaternion().setFromRotationMatrix(basis);
   if(ADJ.rot !== 0){
     const qz = new THREE.Quaternion()
       .setFromAxisAngle(new THREE.Vector3(0,0,1), ADJ.rot);
-    group.quaternion.premultiply(qz);
+    q.premultiply(qz);
   }
 
   // Escala suavizada aparte: la longitud instantanea bombea con el ruido
@@ -303,9 +308,14 @@ function updateShoe(group, sideId, heel, toe, smallToe, w, h, t){
   cx += Math.cos(angle) * ADJ.offX * len - Math.sin(angle) * ADJ.offY * len;
   cy += Math.sin(angle) * ADJ.offX * len + Math.cos(angle) * ADJ.offY * len;
 
+  // No se aplica directo: el loop de 60 FPS interpola hacia este objetivo
   group.visible = true;
-  group.position.set(cx, cy, 0);
-  group.scale.setScalar(len * ADJ.scale * currentShoe.scale);
+  group.userData.target = {
+    pos: new THREE.Vector3(cx, cy, 0),
+    quat: q,
+    scale: len * ADJ.scale * currentShoe.scale,
+    shadow: { cx, cy: cy + len*0.22, len, angle },
+  };
 }
 
 // ===== Adaptador RTMW3D: convierte el JSON del WS al formato que usaba MediaPipe =====
@@ -319,13 +329,30 @@ function lmDesdeWS(d, punto, w, h){
   };
 }
 
-function drawDebug(pts, w, h){
+function drawDebugPts(pts){
+  const w = overlay.width, h = overlay.height;
   [['ankle','#3778dd'],['heel','#e24b4a'],['toe','#f0c000']].forEach(([k,color])=>{
     const lm = pts[k];
     if(!lm) return;
     octx.fillStyle = color;
     octx.beginPath(); octx.arc(lm.x*w, lm.y*h, 6, 0, Math.PI*2); octx.fill();
   });
+}
+
+// Sombra de contacto: elipse difuminada bajo el tenis (vende el "apoyado
+// en el piso" y tapa la union con el zapato real)
+function drawShadow(s){
+  octx.save();
+  octx.translate(s.cx, s.cy);
+  octx.rotate(s.angle);
+  octx.scale(1, 0.32);
+  const g = octx.createRadialGradient(0, 0, 0, 0, 0, s.len * 0.62);
+  g.addColorStop(0, 'rgba(0,0,0,0.42)');
+  g.addColorStop(0.7, 'rgba(0,0,0,0.18)');
+  g.addColorStop(1, 'rgba(0,0,0,0)');
+  octx.fillStyle = g;
+  octx.beginPath(); octx.arc(0, 0, s.len * 0.62, 0, Math.PI*2); octx.fill();
+  octx.restore();
 }
 
 function processFoot(d, group, w, h, t, sideId){
@@ -341,7 +368,7 @@ function processFoot(d, group, w, h, t, sideId){
   toe      = smoothLM(sideId+'_toe',   toe,   t);
   smallToe = smoothLM(sideId+'_stoe',  smallToe, t);
   updateShoe(group, sideId, heel, toe, smallToe, w, h, t);
-  if(debugChk.checked) drawDebug({ankle, heel, toe}, w, h);
+  group.userData.debug = { ankle, heel, toe };
   return true;
 }
 
@@ -365,14 +392,12 @@ function onMensaje(m){
 
   const procesar = () => {
     if(frameImg.src) vctx.drawImage(frameImg, 0, 0, w, h);
-    octx.clearRect(0,0,w,h);
     const t = performance.now();
     const okL = processFoot(m.left,  shoeLeft,  w, h, t, 'left');
     const okR = processFoot(m.right, shoeRight, w, h, t, 'right');
     updateAttract(okL || okR, t);
     statusEl.textContent = ATTRACT.active ? 'Modo atracción'
       : (okL || okR ? 'Detectando…' : 'Sin pies visibles');
-    if(renderer) renderer.render(scene, camera);
     frames++;
     const now = performance.now();
     if(now-lastFps>=1000){
@@ -473,13 +498,13 @@ document.getElementById('adjRot').addEventListener('input', e => ADJ.rot = parse
 document.getElementById('adjZGain').addEventListener('input', e => ADJ.zGain = parseFloat(e.target.value));
 document.getElementById('adjPitch').addEventListener('input', e => ADJ.pitch = parseFloat(e.target.value));
 document.getElementById('resetAdj').addEventListener('click', () => {
-  ADJ.scale = 1.35; ADJ.offY = -0.05; ADJ.offX = -0.08; ADJ.rot = 0; ADJ.zGain = 120; ADJ.pitch = 0.35;
+  ADJ.scale = 1.35; ADJ.offY = -0.05; ADJ.offX = -0.02; ADJ.rot = 0; ADJ.zGain = 120; ADJ.pitch = 0.3;
   document.getElementById('adjScale').value = 1.35;
   document.getElementById('adjY').value = -0.05;
-  document.getElementById('adjX').value = -0.08;
+  document.getElementById('adjX').value = -0.02;
   document.getElementById('adjRot').value = 0;
   document.getElementById('adjZGain').value = 120;
-  document.getElementById('adjPitch').value = 0.35;
+  document.getElementById('adjPitch').value = 0.3;
 });
 document.getElementById('flipL').addEventListener('click', () => {
   if(!shoeLeft) return;
@@ -493,6 +518,41 @@ document.getElementById('flipL').addEventListener('click', () => {
 mirrorChk.addEventListener('change', ()=> stage.classList.toggle('mirror', mirrorChk.checked));
 stage.classList.toggle('mirror', mirrorChk.checked);
 buildCatalog();
+
+// ===== Loop de render a 60 FPS: interpola hacia el ultimo dato del server =====
+// El server manda ~11 FPS; el tenis "persigue" su objetivo cada frame de
+// pantalla, asi el movimiento se ve continuo en vez de a saltos.
+let lastRaf = performance.now();
+function rafLoop(){
+  const now = performance.now();
+  const dt = Math.min((now - lastRaf)/1000, 0.1);
+  lastRaf = now;
+  const k = 1 - Math.exp(-dt * 12);   // constante de persecucion
+
+  if(overlay.width) octx.clearRect(0, 0, overlay.width, overlay.height);
+  for(const g of [shoeLeft, shoeRight]){
+    if(!g) continue;
+    if(!g.visible || !g.userData.target){ g.userData.snapped = false; continue; }
+    const tgt = g.userData.target;
+    if(!g.userData.snapped){
+      // primera aparicion: saltar directo al objetivo (sin "volar" desde 0,0)
+      g.position.copy(tgt.pos);
+      g.quaternion.copy(tgt.quat);
+      g.scale.setScalar(tgt.scale);
+      g.userData.snapped = true;
+    } else {
+      g.position.lerp(tgt.pos, k);
+      g.quaternion.slerp(tgt.quat, k);
+      g.scale.setScalar(g.scale.x + (tgt.scale - g.scale.x) * k);
+    }
+    drawShadow(tgt.shadow);
+    if(debugChk.checked && g.userData.debug) drawDebugPts(g.userData.debug);
+  }
+  if(renderer) renderer.render(scene, camera);
+  requestAnimationFrame(rafLoop);
+}
+requestAnimationFrame(rafLoop);
+
 conectar();   // arranca solo: modo kiosco, sin botón de inicio
 </script>
 </body>
