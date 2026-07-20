@@ -71,6 +71,7 @@
     <label>Perspectiva <input type="range" id="adjZGain" min="-600" max="600" step="10" value="120" /></label>
     <label>Cabeceo <input type="range" id="adjPitch" min="0" max="0.8" step="0.05" value="0.3" /></label>
     <label>Proporción <input type="range" id="adjLW" min="1.5" max="3.5" step="0.1" value="2.6" /></label>
+    <label>Apertura <input type="range" id="adjYaw" min="0" max="1" step="0.05" value="0.5" /></label>
     <button id="resetAdj">Reset</button>
     <button id="flipL">Voltear pie izq</button>
   </div>
@@ -130,7 +131,9 @@ let currentShoe = CATALOG[0];
 // que sobre (pie en puntas de verdad) si inclina el tenis.
 // lenOverWidth: proporcion largo/ancho del pie real (~2.6). Estima el
 // tamaño del tenis de frente, cuando el pie se ve "corto" pero ancho.
-const ADJ = { scale: 1.35, offY: -0.05, offX: -0.02, rot: 0, zGain: 120, pitch: 0.3, lenOverWidth: 2.6 };
+// yaw: cuanto se respeta la apertura lateral de los pies cuando apuntan a
+// la camara (1 = tal cual la ve el modelo; <1 = menos "splay", mas natural).
+const ADJ = { scale: 1.35, offY: -0.05, offX: -0.02, rot: 0, zGain: 120, pitch: 0.3, lenOverWidth: 2.6, yaw: 0.5 };
 
 // ===== One Euro Filter (suaviza) =====
 class LowPass { constructor(){this.y=null;} filter(x,a){this.y=this.y===null?x:a*x+(1-a)*this.y;return this.y;} }
@@ -281,8 +284,14 @@ function updateShoe(group, sideId, heel, toe, smallToe, w, h, t){
   // en RUMBO (giro sobre el piso: libre) + CABECEO (atenuado con ADJ.pitch,
   // porque de frente la inclinacion de la camara "inclina" el pie en
   // pantalla aunque este plano). El tenis nunca rueda: suela al piso.
-  const horiz = Math.hypot(fwd.x, fwd.z);
-  const rumbo = Math.atan2(fwd.z, fwd.x);
+  // Apertura (splay): de frente, la direccion del pie depende sobre todo de
+  // z (dato ruidoso) y los tenis se abren de mas. Se atenua la componente
+  // lateral SOLO cuando el pie apunta a la camara; de lado (bien
+  // condicionado, manda fwd.x) no se toca.
+  const frontal = Math.abs(fwd.z) / (Math.abs(fwd.x) + Math.abs(fwd.z) + 1e-6);
+  const fx = fwd.x * (1 - frontal * (1 - ADJ.yaw));
+  const horiz = Math.hypot(fx, fwd.z);
+  const rumbo = Math.atan2(fwd.z, fx);
   // Zona muerta: se descuenta el cabeceo aparente que mete la inclinacion
   // de la camara (ADJ.pitch rad); lo que sobra es cabeceo real (pie en puntas)
   const rawPitch = Math.atan2(-fwd.y, horiz);
@@ -511,8 +520,9 @@ document.getElementById('adjRot').addEventListener('input', e => ADJ.rot = parse
 document.getElementById('adjZGain').addEventListener('input', e => ADJ.zGain = parseFloat(e.target.value));
 document.getElementById('adjPitch').addEventListener('input', e => ADJ.pitch = parseFloat(e.target.value));
 document.getElementById('adjLW').addEventListener('input', e => ADJ.lenOverWidth = parseFloat(e.target.value));
+document.getElementById('adjYaw').addEventListener('input', e => ADJ.yaw = parseFloat(e.target.value));
 document.getElementById('resetAdj').addEventListener('click', () => {
-  ADJ.scale = 1.35; ADJ.offY = -0.05; ADJ.offX = -0.02; ADJ.rot = 0; ADJ.zGain = 120; ADJ.pitch = 0.3; ADJ.lenOverWidth = 2.6;
+  ADJ.scale = 1.35; ADJ.offY = -0.05; ADJ.offX = -0.02; ADJ.rot = 0; ADJ.zGain = 120; ADJ.pitch = 0.3; ADJ.lenOverWidth = 2.6; ADJ.yaw = 0.5;
   document.getElementById('adjScale').value = 1.35;
   document.getElementById('adjY').value = -0.05;
   document.getElementById('adjX').value = -0.02;
@@ -520,6 +530,7 @@ document.getElementById('resetAdj').addEventListener('click', () => {
   document.getElementById('adjZGain').value = 120;
   document.getElementById('adjPitch').value = 0.3;
   document.getElementById('adjLW').value = 2.6;
+  document.getElementById('adjYaw').value = 0.5;
 });
 document.getElementById('flipL').addEventListener('click', () => {
   if(!shoeLeft) return;
