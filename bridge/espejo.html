@@ -70,6 +70,7 @@
     <label>Giro <input type="range" id="adjRot" min="-3.15" max="3.15" step="0.05" value="0" /></label>
     <label>Perspectiva <input type="range" id="adjZGain" min="-600" max="600" step="10" value="120" /></label>
     <label>Cabeceo <input type="range" id="adjPitch" min="0" max="0.8" step="0.05" value="0.3" /></label>
+    <label>Proporción <input type="range" id="adjLW" min="1.5" max="3.5" step="0.1" value="2.6" /></label>
     <button id="resetAdj">Reset</button>
     <button id="flipL">Voltear pie izq</button>
   </div>
@@ -127,7 +128,9 @@ let currentShoe = CATALOG[0];
 // pitch: ZONA MUERTA del cabeceo en radianes. La camara baja "inclina" el
 // pie en pantalla aunque este plano (~0.3 rad); se descuenta ese sesgo y lo
 // que sobre (pie en puntas de verdad) si inclina el tenis.
-const ADJ = { scale: 1.35, offY: -0.05, offX: -0.02, rot: 0, zGain: 120, pitch: 0.3 };
+// lenOverWidth: proporcion largo/ancho del pie real (~2.6). Estima el
+// tamaño del tenis de frente, cuando el pie se ve "corto" pero ancho.
+const ADJ = { scale: 1.35, offY: -0.05, offX: -0.02, rot: 0, zGain: 120, pitch: 0.3, lenOverWidth: 2.6 };
 
 // ===== One Euro Filter (suaviza) =====
 class LowPass { constructor(){this.y=null;} filter(x,a){this.y=this.y===null?x:a*x+(1-a)*this.y;return this.y;} }
@@ -215,11 +218,17 @@ function initThree(w, h){
   renderer.setSize(w, h, false);
   renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
   renderer.outputColorSpace = THREE.SRGBColorSpace;
+  renderer.toneMapping = THREE.ACESFilmicToneMapping;   // look mas cinematografico
+  renderer.toneMappingExposure = 1.15;
   scene = new THREE.Scene();
   camera = new THREE.OrthographicCamera(0, w, 0, h, -2000, 2000);
-  scene.add(new THREE.AmbientLight(0xffffff, 1.1));
-  const dir = new THREE.DirectionalLight(0xffffff, 2.2);
-  dir.position.set(0.4, -1, 1); scene.add(dir);
+  scene.add(new THREE.AmbientLight(0xffffff, 1.0));
+  const key = new THREE.DirectionalLight(0xffffff, 2.4);   // luz principal
+  key.position.set(0.4, -1, 1); scene.add(key);
+  const fill = new THREE.DirectionalLight(0xffffff, 0.9);  // relleno lado opuesto
+  fill.position.set(-0.6, -0.3, 0.7); scene.add(fill);
+  const rim = new THREE.DirectionalLight(0xffffff, 0.7);   // contra desde atras
+  rim.position.set(0, 0.4, -1); scene.add(rim);
 }
 
 function loadShoePair(){
@@ -298,9 +307,13 @@ function updateShoe(group, sideId, heel, toe, smallToe, w, h, t){
     q.premultiply(qz);
   }
 
-  // Escala suavizada aparte: la longitud instantanea bombea con el ruido
-  // de z cuando el pie apunta a la camara
-  const len = sm(sideId + '_len', rawLen, t);
+  // Tamaño robusto a la orientacion: de frente el pie se "acorta" en
+  // pantalla (foreshortening) y el tenis encogia. El ancho del pie
+  // (gordo<->chico) es maximo justo de frente; se toma el mayor entre el
+  // largo 3D y ancho*proporcion -> tamaño estable en todos los angulos.
+  const width2d = Math.hypot(T.x - S.x, T.y - S.y);
+  const sizeRaw = Math.max(rawLen, width2d * ADJ.lenOverWidth);
+  const len = sm(sideId + '_len', sizeRaw, t);
 
   // Centro entre talon y dedos + offsets a lo largo/alto del pie en pantalla
   let cx = (H.x + M.x)/2, cy = (H.y + M.y)/2;
@@ -497,14 +510,16 @@ document.getElementById('adjX').addEventListener('input', e => ADJ.offX = parseF
 document.getElementById('adjRot').addEventListener('input', e => ADJ.rot = parseFloat(e.target.value));
 document.getElementById('adjZGain').addEventListener('input', e => ADJ.zGain = parseFloat(e.target.value));
 document.getElementById('adjPitch').addEventListener('input', e => ADJ.pitch = parseFloat(e.target.value));
+document.getElementById('adjLW').addEventListener('input', e => ADJ.lenOverWidth = parseFloat(e.target.value));
 document.getElementById('resetAdj').addEventListener('click', () => {
-  ADJ.scale = 1.35; ADJ.offY = -0.05; ADJ.offX = -0.02; ADJ.rot = 0; ADJ.zGain = 120; ADJ.pitch = 0.3;
+  ADJ.scale = 1.35; ADJ.offY = -0.05; ADJ.offX = -0.02; ADJ.rot = 0; ADJ.zGain = 120; ADJ.pitch = 0.3; ADJ.lenOverWidth = 2.6;
   document.getElementById('adjScale').value = 1.35;
   document.getElementById('adjY').value = -0.05;
   document.getElementById('adjX').value = -0.02;
   document.getElementById('adjRot').value = 0;
   document.getElementById('adjZGain').value = 120;
   document.getElementById('adjPitch').value = 0.3;
+  document.getElementById('adjLW').value = 2.6;
 });
 document.getElementById('flipL').addEventListener('click', () => {
   if(!shoeLeft) return;
