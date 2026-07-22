@@ -115,7 +115,11 @@ const MIN_VIS = 0.35;
 
 // ===== CATÁLOGO DE TENIS =====
 // Copia los .glb a public/models/ junto a este archivo.
+// orient (opcional): [x,y,z] en radianes para corregir la orientacion del
+// modelo si su fuente trae otros ejes que los Converse (largo=X, arriba=Y).
 const CATALOG = [
+  { id: 'onda',      name: 'Onda · Sidhe',     path: 'public/models/ONDA.glb',      scale: 1.0, orient: [0, 0, 0] },
+  { id: 'estratos',  name: 'Estratos · Sidhe', path: 'public/models/Estratos.glb',  scale: 1.0, orient: [0, 0, 0] },
   { id: 'converse',  name: 'Converse',   path: 'public/models/converseShoe.glb',  scale: 1.0 },
   { id: 'converse2', name: 'Converse 2', path: 'public/models/converseShoe2.glb', scale: 1.0 },
   { id: 'ballerina', name: 'Ballerina',  path: 'public/models/ballerinaShoe.glb', scale: 1.2 },
@@ -239,11 +243,19 @@ function loadShoePair(){
   shoeLeft = null; shoeRight = null;
 
   loader.load(currentShoe.path, (gltf) => {
-    const base = gltf.scene;
+    // Orientacion por-modelo: se rota el modelo crudo dentro de un grupo
+    // ANTES de medir/centrar, para que fuentes con otros ejes queden como
+    // los Converse (largo=X, arriba=Y, ancho=Z).
+    const base = new THREE.Group();
+    base.add(gltf.scene);
+    if(currentShoe.orient) gltf.scene.rotation.set(...currentShoe.orient);
+    base.updateMatrixWorld(true);
     const box = new THREE.Box3().setFromObject(base);
     const c = box.getCenter(new THREE.Vector3());
     const size = box.getSize(new THREE.Vector3());
-    base.position.sub(c);
+    // Centrar el CONTENIDO (no el grupo) para que valga aunque el modelo
+    // no venga centrado en su origen (tipico de STL exportados).
+    gltf.scene.position.sub(c);
     const maxDim = Math.max(size.x, size.y, size.z);
     base.scale.setScalar(1/maxDim);
 
