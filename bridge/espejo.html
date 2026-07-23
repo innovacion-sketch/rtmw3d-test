@@ -208,6 +208,7 @@
       <div class="adminRow">
         <label><input type="checkbox" id="mirrorChk" checked /> Espejo</label>
         <label><input type="checkbox" id="debugChk" /> Ver puntos</label>
+        <label><input type="checkbox" id="occChk" /> Oclusión de pierna</label>
         <label class="adminFile">🎬 Video de marca
           <input type="file" id="attractFile" accept="video/*" style="display:none;" />
         </label>
@@ -224,6 +225,8 @@
         <label>Proporción <input type="range" id="adjLW" min="1.5" max="3.5" step="0.1" value="2.6" /></label>
         <label>Apertura <input type="range" id="adjYaw" min="0" max="1" step="0.05" value="0.5" /></label>
         <label>Puño · gestos <input type="range" id="adjFist" min="1.2" max="2.6" step="0.05" value="1.8" /></label>
+        <label>Oclusión alto <input type="range" id="adjOccUp" min="0.5" max="3" step="0.1" value="1.7" /></label>
+        <label>Oclusión frente <input type="range" id="adjOccZ" min="0" max="200" step="5" value="80" /></label>
       </div>
     </div>
   </main>
@@ -365,7 +368,33 @@ function updateAttract(hasFeet, now){
 // ===== Three.js =====
 let renderer, scene, camera;
 let shoeLeft = null, shoeRight = null;
+let occL = null, occR = null;   // occluders de pierna (oclusion)
 const loader = new GLTFLoader();
+
+// Oclusion: una caja "invisible" (solo escribe profundidad) sobre el tobillo
+// que tapa la boca del tenis para que la pierna/pantalon entren en el.
+const OCC = { on:false, up:1.7, z:80 };
+function makeOccluder(){
+  const m = new THREE.Mesh(
+    new THREE.BoxGeometry(1, 1, 1),
+    new THREE.MeshBasicMaterial({ colorWrite:false }));  // no pinta, solo depth
+  m.renderOrder = -1;   // se dibuja antes que el tenis -> lo ocluye
+  m.visible = false;
+  return m;
+}
+function updateOccluder(occ, ankle, heel, w, h){
+  if(!occ) return;
+  if(!OCC.on){ occ.visible = false; return; }
+  const ax = ankle.x*w, ay = ankle.y*h;
+  const hx = heel.x*w, hy = heel.y*h;
+  const foot = Math.hypot(ax-hx, ay-hy) || 40;
+  occ.visible = true;
+  occ.quaternion.identity();
+  // caja que sube por la pierna desde el tobillo (pantalla arriba = -y),
+  // por delante del tenis (z) para tapar la boca/collar
+  occ.position.set(ax, ay - foot*OCC.up*0.5, OCC.z);
+  occ.scale.set(foot*1.6, foot*OCC.up, foot*2.0);
+}
 
 function initThree(w, h){
   renderer = new THREE.WebGLRenderer({ canvas: threeCanvas, alpha: true, antialias: true, preserveDrawingBuffer: true });
@@ -383,6 +412,8 @@ function initThree(w, h){
   fill.position.set(-0.6, -0.3, 0.7); scene.add(fill);
   const rim = new THREE.DirectionalLight(0xffffff, 0.7);   // contra desde atras
   rim.position.set(0, 0.4, -1); scene.add(rim);
+  occL = makeOccluder(); scene.add(occL);
+  occR = makeOccluder(); scene.add(occR);
 }
 
 function loadShoePair(){
@@ -537,18 +568,21 @@ function drawShadow(s){
 }
 
 function processFoot(d, group, w, h, t, sideId){
-  if(!d){ if(group) group.visible=false; return false; }
+  const occ = sideId === 'left' ? occL : occR;
+  if(!d){ if(group) group.visible=false; if(occ) occ.visible=false; return false; }
   let ankle    = lmDesdeWS(d, 'ankle', w, h);
   let heel     = lmDesdeWS(d, 'heel',  w, h);
   let toe      = lmDesdeWS(d, 'toe',   w, h);
   let smallToe = lmDesdeWS(d, 'small_toe', w, h);
   // la visibilidad NO depende del dedo chico (queda oculto en vista de perfil)
   const vis = Math.min(ankle.visibility, heel.visibility, toe.visibility);
-  if(vis < MIN_VIS){ if(group) group.visible=false; return false; }
+  if(vis < MIN_VIS){ if(group) group.visible=false; if(occ) occ.visible=false; return false; }
+  ankle    = smoothLM(sideId+'_ankle', ankle, t);
   heel     = smoothLM(sideId+'_heel',  heel,  t);
   toe      = smoothLM(sideId+'_toe',   toe,   t);
   smallToe = smoothLM(sideId+'_stoe',  smallToe, t);
   updateShoe(group, sideId, heel, toe, smallToe, w, h, t);
+  updateOccluder(occ, ankle, heel, w, h);
   group.userData.debug = { ankle, heel, toe };
   return true;
 }
@@ -716,6 +750,9 @@ document.getElementById('adjPitch').addEventListener('input', e => ADJ.pitch = p
 document.getElementById('adjLW').addEventListener('input', e => ADJ.lenOverWidth = parseFloat(e.target.value));
 document.getElementById('adjYaw').addEventListener('input', e => ADJ.yaw = parseFloat(e.target.value));
 document.getElementById('adjFist').addEventListener('input', e => GESTURE.fistThr = parseFloat(e.target.value));
+document.getElementById('occChk').addEventListener('change', e => OCC.on = e.target.checked);
+document.getElementById('adjOccUp').addEventListener('input', e => OCC.up = parseFloat(e.target.value));
+document.getElementById('adjOccZ').addEventListener('input', e => OCC.z = parseFloat(e.target.value));
 document.getElementById('resetAdj').addEventListener('click', () => {
   ADJ.scale = 1.35; ADJ.offY = -0.05; ADJ.offX = -0.02; ADJ.rot = 0; ADJ.zGain = 120; ADJ.pitch = 0.3; ADJ.lenOverWidth = 2.6; ADJ.yaw = 0.5;
   GESTURE.fistThr = 1.8; document.getElementById('adjFist').value = 1.8;
