@@ -58,6 +58,15 @@ KP = {
     "right": {"ankle": 16, "toe": 20, "small_toe": 21, "heel": 22},
 }
 
+# Manos (para el control por gestos). Bloque de mano = 21 kpts:
+# 0=muñeca, +9=nudillo medio (mmcp), tips: indice+8, medio+12, anular+16, meñique+20
+# left_hand empieza en 91, right_hand en 112.
+HANDS = {
+    "left":  {"wrist": 91,  "mmcp": 100, "tips": [99, 103, 107, 111]},
+    "right": {"wrist": 112, "mmcp": 121, "tips": [120, 124, 128, 132]},
+}
+HAND_THR = 0.3   # score minimo de la muñeca para tomar la mano como puntero
+
 CLIENTS = set()
 
 
@@ -92,6 +101,39 @@ def lado_json(kpts3d, kpts2d, scores, lado):
         sc[nombre] = round(float(scores[idx]), 3)
     pts["score"] = sc
     return pts
+
+
+def mano_json(kpts2d, scores):
+    """Mano-puntero para el control por gestos, o None.
+
+    Devuelve la mano mas levantada y con muñeca confiable:
+      x, y  = base de la palma (nudillo medio) en pixeles -> posicion del cursor
+      open  = apertura: dedos lejos de la muñeca -> mano abierta; cerca -> puño.
+              Se normaliza por el tamaño de la mano, asi no depende de la
+              distancia a la camara (abierta ~2.5, puño ~1.2).
+      score = confianza de la muñeca.
+    """
+    mejor = None
+    for lado, ix in HANDS.items():
+        sc = float(scores[ix["wrist"]])
+        if sc < HAND_THR:
+            continue
+        wx, wy = float(kpts2d[ix["wrist"]][0]), float(kpts2d[ix["wrist"]][1])
+        mx, my = float(kpts2d[ix["mmcp"]][0]), float(kpts2d[ix["mmcp"]][1])
+        hand_size = ((wx - mx) ** 2 + (wy - my) ** 2) ** 0.5 + 1e-6
+        d = 0.0
+        for tip in ix["tips"]:
+            tx, ty = float(kpts2d[tip][0]), float(kpts2d[tip][1])
+            d += ((tx - wx) ** 2 + (ty - wy) ** 2) ** 0.5
+        openness = (d / len(ix["tips"])) / hand_size
+        cand = {"lado": lado, "x": round(mx, 1), "y": round(my, 1),
+                "open": round(openness, 2), "score": round(sc, 3), "_y": my}
+        # la mano puntero = la mas levantada (menor y en pantalla)
+        if mejor is None or cand["_y"] < mejor["_y"]:
+            mejor = cand
+    if mejor is not None:
+        mejor.pop("_y")
+    return mejor
 
 
 def inference_loop(loop):
@@ -131,7 +173,8 @@ def inference_loop(loop):
 
         h, w = frame.shape[:2]
         msg = {"t": int(time.time() * 1000), "w": w, "h": h,
-               "fps": round(fps_actual, 1), "left": None, "right": None}
+               "fps": round(fps_actual, 1), "left": None, "right": None,
+               "hand": None}
 
         det = inference_detector(detector, frame)
         pred = det.pred_instances.cpu().numpy()
@@ -155,6 +198,7 @@ def inference_loop(loop):
                     kpts2d = kpts3d[:, :2]
                 msg["left"] = lado_json(kpts3d, kpts2d, scores, "left")
                 msg["right"] = lado_json(kpts3d, kpts2d, scores, "right")
+                msg["hand"] = mano_json(kpts2d, scores)
 
         if SEND_VIDEO and CLIENTS:
             ok_enc, jpg = cv2.imencode(

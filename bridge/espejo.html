@@ -137,6 +137,30 @@
     animation:blink 1.4s ease-in-out infinite; }
   @keyframes floaty{ 0%,100%{ transform:translateY(0); } 50%{ transform:translateY(-10px); } }
   @keyframes blink{ 0%,100%{ opacity:.35; } 50%{ opacity:1; } }
+
+  /* ---------- Control por gestos (mano = mouse) ---------- */
+  #gestureLayer{ position:absolute; inset:0; z-index:12; pointer-events:none;
+    opacity:0; transition:opacity .3s; }
+  #gestureLayer.on{ opacity:1; }
+  #gestureChips{ position:absolute; top:16px; left:50%; transform:translateX(-50%);
+    display:flex; gap:10px; max-width:94%; flex-wrap:wrap; justify-content:center; }
+  .gchip{ background:rgba(10,12,18,.72); border:2px solid rgba(255,255,255,.16);
+    border-radius:14px; padding:9px 15px; color:#fff; font-weight:700; font-size:14px;
+    display:flex; flex-direction:column; align-items:center; gap:1px; transition:.12s;
+    position:relative; overflow:hidden; }
+  .gchip small{ font-weight:500; font-size:10px; color:var(--mut); }
+  .gchip.active{ background:linear-gradient(135deg,var(--magenta),#b6006e); border-color:transparent; }
+  .gchip.hover{ border-color:var(--cyan); transform:scale(1.06);
+    box-shadow:0 0 22px rgba(28,160,219,.5); }
+  /* barra de "cerrando puño" que llena el chip al seleccionar */
+  .gchip .fill{ position:absolute; left:0; bottom:0; height:100%; width:0%;
+    background:rgba(255,210,0,.28); transition:width .05s linear; }
+  #handCursor{ position:absolute; left:50%; top:50%;
+    width:56px; height:56px; margin:-28px 0 0 -28px; border-radius:50%;
+    border:3px solid #fff; background:rgba(255,255,255,.12);
+    box-shadow:0 0 18px rgba(0,0,0,.55); display:grid; place-items:center;
+    font-size:24px; transition:transform .08s, background .1s, border-color .1s; }
+  #handCursor.closed{ background:var(--yellow); border-color:var(--yellow); transform:scale(.72); }
 </style>
 </head>
 <body>
@@ -157,6 +181,10 @@
       <canvas id="video"></canvas>
       <canvas id="overlay"></canvas>
       <canvas id="three"></canvas>
+      <div id="gestureLayer">
+        <div id="gestureChips"></div>
+        <div id="handCursor">🖐</div>
+      </div>
       <div id="attract">
         <video id="attractVideo" loop muted playsinline></video>
         <div id="attractMsg">
@@ -195,6 +223,7 @@
         <label>Cabeceo <input type="range" id="adjPitch" min="0" max="0.8" step="0.05" value="0.3" /></label>
         <label>Proporción <input type="range" id="adjLW" min="1.5" max="3.5" step="0.1" value="2.6" /></label>
         <label>Apertura <input type="range" id="adjYaw" min="0" max="1" step="0.05" value="0.5" /></label>
+        <label>Puño · gestos <input type="range" id="adjFist" min="1.2" max="2.6" step="0.05" value="1.8" /></label>
       </div>
     </div>
   </main>
@@ -289,6 +318,18 @@ const photoBtn = document.getElementById('photoBtn');
 const attractEl = document.getElementById('attract');
 const attractVideo = document.getElementById('attractVideo');
 const attractFile = document.getElementById('attractFile');
+const gestureLayer = document.getElementById('gestureLayer');
+const gestureChipsEl = document.getElementById('gestureChips');
+const handCursor = document.getElementById('handCursor');
+
+// ===== Control por gestos (mano = mouse) =====
+const GESTURE = {
+  fistThr: 1.8,      // apertura por debajo de esto = puño (cerrar = seleccionar)
+  holdMs: 500,       // hay que mantener el puño este tiempo sobre un chip
+  cursorLerp: 0.35,  // suavizado del cursor (mayor = mas rapido)
+};
+const hand = { present:false, x:0.5, y:0.5, open:3, cx:0.5, cy:0.5,
+               closedSince:0, hoverIdx:-1, lastSel:-1 };
 
 // ===== Modo attract: máquina de estados con tiempos de gracia =====
 const ATTRACT = {
@@ -529,6 +570,16 @@ function onMensaje(m){
   }
   serverFps = m.fps;
 
+  // Estado de la mano para el control por gestos (coords normalizadas 0..1)
+  if(m.hand){
+    hand.present = true;
+    hand.x = m.hand.x / w;
+    hand.y = m.hand.y / h;
+    hand.open = m.hand.open;
+  } else {
+    hand.present = false;
+  }
+
   const procesar = () => {
     if(frameImg.src) vctx.drawImage(frameImg, 0, 0, w, h);
     const t = performance.now();
@@ -602,24 +653,45 @@ function takePhoto(){
   }, 'image/png');
 }
 
-// Catálogo UI
+// "Onda · Sidhe" -> ["Onda", "SIDHE"] ; "Converse" -> ["Converse", "Clásico"]
+function tituloSub(shoe){
+  const parts = shoe.name.split('·').map(s => s.trim());
+  return [parts[0], parts[1] ? parts[1].toUpperCase() : 'Clásico'];
+}
+
+let selectedIdx = 0;
+// Seleccion unica de modelo, reflejada en catalogo (mouse) y chips (gestos)
+function selectShoe(i){
+  if(i < 0 || i >= CATALOG.length || i === selectedIdx) return;
+  selectedIdx = i;
+  currentShoe = CATALOG[i];
+  catalogEl.querySelectorAll('button').forEach((b, k) => b.classList.toggle('active', k===i));
+  gestureChipsEl.querySelectorAll('.gchip').forEach((c, k) => c.classList.toggle('active', k===i));
+  if(renderer) loadShoePair();
+}
+
+// Catálogo UI (mouse/admin)
 function buildCatalog(){
   catalogEl.innerHTML = '';
   CATALOG.forEach((shoe, i) => {
     const b = document.createElement('button');
-    // "Onda · Sidhe" -> titulo "Onda" + subtitulo "SIDHE"
-    const parts = shoe.name.split('·').map(s => s.trim());
-    const titulo = parts[0];
-    const sub = parts[1] ? parts[1].toUpperCase() : 'Clásico';
+    const [titulo, sub] = tituloSub(shoe);
     b.innerHTML = `<span>${titulo}</span><small>${sub}</small>`;
-    if(i===0) b.classList.add('active');
-    b.onclick = () => {
-      currentShoe = shoe;
-      catalogEl.querySelectorAll('button').forEach(x=>x.classList.remove('active'));
-      b.classList.add('active');
-      if(renderer) loadShoePair();
-    };
+    if(i===selectedIdx) b.classList.add('active');
+    b.onclick = () => selectShoe(i);
     catalogEl.appendChild(b);
+  });
+}
+
+// Chips para el control por gestos (overlay dentro del stage)
+function buildGestureChips(){
+  gestureChipsEl.innerHTML = '';
+  CATALOG.forEach((shoe, i) => {
+    const c = document.createElement('div');
+    c.className = 'gchip' + (i===selectedIdx ? ' active' : '');
+    const [titulo, sub] = tituloSub(shoe);
+    c.innerHTML = `<div class="fill"></div><span>${titulo}</span><small>${sub}</small>`;
+    gestureChipsEl.appendChild(c);
   });
 }
 
@@ -642,8 +714,10 @@ document.getElementById('adjZGain').addEventListener('input', e => ADJ.zGain = p
 document.getElementById('adjPitch').addEventListener('input', e => ADJ.pitch = parseFloat(e.target.value));
 document.getElementById('adjLW').addEventListener('input', e => ADJ.lenOverWidth = parseFloat(e.target.value));
 document.getElementById('adjYaw').addEventListener('input', e => ADJ.yaw = parseFloat(e.target.value));
+document.getElementById('adjFist').addEventListener('input', e => GESTURE.fistThr = parseFloat(e.target.value));
 document.getElementById('resetAdj').addEventListener('click', () => {
   ADJ.scale = 1.35; ADJ.offY = -0.05; ADJ.offX = -0.02; ADJ.rot = 0; ADJ.zGain = 120; ADJ.pitch = 0.3; ADJ.lenOverWidth = 2.6; ADJ.yaw = 0.5;
+  GESTURE.fistThr = 1.8; document.getElementById('adjFist').value = 1.8;
   document.getElementById('adjScale').value = 1.35;
   document.getElementById('adjY').value = -0.05;
   document.getElementById('adjX').value = -0.02;
@@ -671,6 +745,63 @@ document.getElementById('adminBtn').addEventListener('click', () => {
 });
 
 buildCatalog();
+buildGestureChips();
+
+// ===== Control por gestos: cursor de mano + seleccion por puño =====
+function updateGesture(){
+  // Solo fuera del modo atraccion y con una mano detectada
+  if(ATTRACT.active || !hand.present){
+    gestureLayer.classList.remove('on');
+    hand.hoverIdx = -1; hand.closedSince = 0;
+    gestureChipsEl.querySelectorAll('.gchip').forEach(c => {
+      c.classList.remove('hover');
+      const f = c.querySelector('.fill'); if(f) f.style.width = '0%';
+    });
+    return;
+  }
+  gestureLayer.classList.add('on');
+
+  // Cursor: objetivo en coords del stage (0..1), con espejo si aplica, suavizado
+  const tx = mirrorChk.checked ? (1 - hand.x) : hand.x;
+  hand.cx += (tx - hand.cx) * GESTURE.cursorLerp;
+  hand.cy += (hand.y - hand.cy) * GESTURE.cursorLerp;
+  handCursor.style.left = (hand.cx * 100) + '%';
+  handCursor.style.top  = (hand.cy * 100) + '%';
+
+  const closed = hand.open < GESTURE.fistThr;
+  handCursor.classList.toggle('closed', closed);
+  handCursor.textContent = closed ? '✊' : '🖐';
+
+  // Hit-test del cursor contra los chips (mismos rects de pantalla)
+  const cr = handCursor.getBoundingClientRect();
+  const ccx = cr.left + cr.width/2, ccy = cr.top + cr.height/2;
+  const chips = gestureChipsEl.querySelectorAll('.gchip');
+  let hoverIdx = -1;
+  chips.forEach((c, i) => {
+    const r = c.getBoundingClientRect();
+    const over = ccx>=r.left && ccx<=r.right && ccy>=r.top && ccy<=r.bottom;
+    c.classList.toggle('hover', over);
+    if(over) hoverIdx = i;
+  });
+  if(hoverIdx !== hand.hoverIdx){ hand.closedSince = 0; }  // cambio de chip -> reinicia
+  hand.hoverIdx = hoverIdx;
+
+  // Cerrar el puño sobre un chip por holdMs = seleccionar (barra de progreso)
+  const now = performance.now();
+  if(closed && hoverIdx >= 0){
+    if(hand.closedSince === 0) hand.closedSince = now;
+    const held = now - hand.closedSince;
+    const fill = chips[hoverIdx].querySelector('.fill');
+    if(fill) fill.style.width = Math.min(100, held / GESTURE.holdMs * 100) + '%';
+    if(held >= GESTURE.holdMs){
+      selectShoe(hoverIdx);
+      hand.closedSince = now;   // ya seleccionado (selectShoe ignora repetidos)
+    }
+  } else {
+    hand.closedSince = 0;
+    chips.forEach(c => { const f=c.querySelector('.fill'); if(f) f.style.width='0%'; });
+  }
+}
 
 // ===== Loop de render a 60 FPS: interpola hacia el ultimo dato del server =====
 // El server manda ~11 FPS; el tenis "persigue" su objetivo cada frame de
@@ -701,6 +832,7 @@ function rafLoop(){
     drawShadow(tgt.shadow);
     if(debugChk.checked && g.userData.debug) drawDebugPts(g.userData.debug);
   }
+  updateGesture();
   if(renderer) renderer.render(scene, camera);
   requestAnimationFrame(rafLoop);
 }
