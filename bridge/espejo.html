@@ -392,7 +392,7 @@ function updateOccluder(occ, ankle, heel, w, h){
   occ.quaternion.identity();
   // caja que sube por la pierna desde el tobillo (pantalla arriba = -y),
   // por delante del tenis (z) para tapar la boca/collar
-  occ.position.set(ax, ay - foot*OCC.up*0.5, OCC.z);
+  occ.position.set(ax, ay - foot*OCC.up*0.5, OCC.z * (w / 640));
   occ.scale.set(foot*1.6, foot*OCC.up, foot*2.0);
 }
 
@@ -458,8 +458,11 @@ function updateShoe(group, sideId, heel, toe, smallToe, w, h, t){
   // Puntos en 3D: x,y en pixeles de pantalla; z de RTMW3D convertida a
   // "pixeles" con zGain, relativa al promedio local (solo importa el delta).
   const zRef = (heel.z + toe.z + smallToe.z) / 3;
+  // zGain esta calibrado para 640px de ancho: se escala con la resolucion
+  // de salida para que el mismo valor valga en cualquier resolucion.
+  const zk = ADJ.zGain * (w / 640);
   const p3 = lm => new THREE.Vector3(
-    lm.x*w, lm.y*h, (zRef - lm.z) * ADJ.zGain);
+    lm.x*w, lm.y*h, (zRef - lm.z) * zk);
   const H = p3(heel), T = p3(toe), S = p3(smallToe);
 
   // Eje largo del pie: talon -> centro de los dedos, en 3D

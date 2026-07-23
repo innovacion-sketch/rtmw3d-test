@@ -28,8 +28,15 @@ import numpy as np
 
 # ----------------- CONFIGURACION -----------------
 CAM_ID = 0          # indice de camara (ver bridge/list_cameras.py)
-CAM_WIDTH = 0       # 0 = dejar resolucion default de la camara
-CAM_HEIGHT = 0
+# Resolucion de CAPTURA: a mas pixeles, keypoints mas finos (la ELP AR0234 es
+# de ~2MP; a 640x480 se desperdiciaba). Alta resolucion por USB EXIGE MJPG.
+# Si la camara no la soporta, abrir_camara() cae solo a 640x480.
+CAM_WIDTH = 1600
+CAM_HEIGHT = 1200
+# Resolucion de SALIDA: video al navegador y espacio de coordenadas de los
+# keypoints. Se infiere en alta y se reescala aqui -> precision de alta
+# resolucion sin canvas gigantes ni ancho de banda de mas.
+OUT_MAX_W = 960
 WS_HOST = "localhost"
 WS_PORT = 8765
 DEVICE = "cuda:0"   # "cpu" para probar sin GPU
@@ -37,7 +44,7 @@ BBOX_THR = 0.5      # umbral del detector de personas
 SEND_VIDEO = True   # enviar el frame JPEG en cada mensaje (campo "img").
                     # Necesario para el espejo web: la camara es exclusiva
                     # del server, el navegador no puede abrirla a la vez.
-JPEG_QUALITY = 70
+JPEG_QUALITY = 72
 # --------------------------------------------------
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -70,32 +77,52 @@ HAND_THR = 0.3   # score minimo de la muñeca para tomar la mano como puntero
 CLIENTS = set()
 
 
+def _intentar(cap, wid, hei, mjpg):
+    """Configura formato/resolucion y devuelve un frame si transmite."""
+    if mjpg:
+        cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*"MJPG"))
+    if wid and hei:
+        cap.set(cv2.CAP_PROP_FRAME_WIDTH, wid)
+        cap.set(cv2.CAP_PROP_FRAME_HEIGHT, hei)
+    ok, frame = cap.read()
+    return frame if ok else None
+
+
 def abrir_camara():
-    """Abre la camara probando MSMF -> DSHOW -> ANY, con fallback MJPG."""
+    """Abre la camara probando MSMF -> DSHOW -> ANY.
+
+    Intenta primero la resolucion alta en MJPG (necesaria para que quepa en
+    el ancho de banda USB); si la camara no la entrega, baja a 640x480 y
+    por ultimo al formato por default. Nunca deja el kiosco sin camara.
+    """
+    intentos = []
+    if CAM_WIDTH and CAM_HEIGHT:
+        intentos.append((CAM_WIDTH, CAM_HEIGHT, True))
+    intentos.append((640, 480, True))
+    intentos.append((0, 0, False))     # lo que de la camara por default
+
     for backend in (cv2.CAP_MSMF, cv2.CAP_DSHOW, cv2.CAP_ANY):
         cap = cv2.VideoCapture(CAM_ID, backend)
-        if CAM_WIDTH and CAM_HEIGHT:
-            cap.set(cv2.CAP_PROP_FRAME_WIDTH, CAM_WIDTH)
-            cap.set(cv2.CAP_PROP_FRAME_HEIGHT, CAM_HEIGHT)
-        ok, _ = cap.read()
-        if not ok and cap.isOpened():
-            cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*'MJPG'))
-            cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
-            cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
-            ok, _ = cap.read()
-        if ok:
-            print(f"[camara] indice {CAM_ID} abierta con "
-                  f"{cap.getBackendName()}", flush=True)
-            return cap
+        if not cap.isOpened():
+            cap.release()
+            continue
+        for (wid, hei, mjpg) in intentos:
+            frame = _intentar(cap, wid, hei, mjpg)
+            if frame is not None:
+                rh, rw = frame.shape[:2]
+                print(f"[camara] indice {CAM_ID} @ {rw}x{rh} "
+                      f"({cap.getBackendName()})", flush=True)
+                return cap
         cap.release()
     return None
 
 
-def lado_json(kpts3d, kpts2d, scores, lado):
+def lado_json(kpts3d, kpts2d, scores, lado, esc=1.0):
+    """esc = factor captura -> salida (se infiere en alta, se reporta en OUT)."""
     pts = {}
     sc = {}
     for nombre, idx in KP[lado].items():
-        x, y = float(kpts2d[idx][0]), float(kpts2d[idx][1])
+        x, y = float(kpts2d[idx][0]) * esc, float(kpts2d[idx][1]) * esc
         z = float(kpts3d[idx][2])
         pts[nombre] = [round(x, 1), round(y, 1), round(z, 4)]
         sc[nombre] = round(float(scores[idx]), 3)
@@ -103,7 +130,7 @@ def lado_json(kpts3d, kpts2d, scores, lado):
     return pts
 
 
-def mano_json(kpts2d, scores):
+def mano_json(kpts2d, scores, esc=1.0):
     """Mano-puntero para el control por gestos, o None.
 
     Devuelve la mano mas levantada y con muñeca confiable:
@@ -125,8 +152,8 @@ def mano_json(kpts2d, scores):
         for tip in ix["tips"]:
             tx, ty = float(kpts2d[tip][0]), float(kpts2d[tip][1])
             d += ((tx - wx) ** 2 + (ty - wy) ** 2) ** 0.5
-        openness = (d / len(ix["tips"])) / hand_size
-        cand = {"lado": lado, "x": round(mx, 1), "y": round(my, 1),
+        openness = (d / len(ix["tips"])) / hand_size   # ratio: no depende de esc
+        cand = {"lado": lado, "x": round(mx * esc, 1), "y": round(my * esc, 1),
                 "open": round(openness, 2), "score": round(sc, 3), "_y": my}
         # la mano puntero = la mas levantada (menor y en pantalla)
         if mejor is None or cand["_y"] < mejor["_y"]:
@@ -172,7 +199,11 @@ def inference_loop(loop):
             continue
 
         h, w = frame.shape[:2]
-        msg = {"t": int(time.time() * 1000), "w": w, "h": h,
+        # Inferencia en la resolucion de captura (alta); coordenadas y video
+        # se reportan reescalados a OUT_MAX_W.
+        esc = OUT_MAX_W / w if (OUT_MAX_W and w > OUT_MAX_W) else 1.0
+        ow, oh = int(round(w * esc)), int(round(h * esc))
+        msg = {"t": int(time.time() * 1000), "w": ow, "h": oh,
                "fps": round(fps_actual, 1), "left": None, "right": None,
                "hand": None}
 
@@ -196,13 +227,15 @@ def inference_loop(loop):
                     kpts2d = inst.transformed_keypoints[0]
                 else:
                     kpts2d = kpts3d[:, :2]
-                msg["left"] = lado_json(kpts3d, kpts2d, scores, "left")
-                msg["right"] = lado_json(kpts3d, kpts2d, scores, "right")
-                msg["hand"] = mano_json(kpts2d, scores)
+                msg["left"] = lado_json(kpts3d, kpts2d, scores, "left", esc)
+                msg["right"] = lado_json(kpts3d, kpts2d, scores, "right", esc)
+                msg["hand"] = mano_json(kpts2d, scores, esc)
 
         if SEND_VIDEO and CLIENTS:
+            envio = frame if esc == 1.0 else cv2.resize(
+                frame, (ow, oh), interpolation=cv2.INTER_AREA)
             ok_enc, jpg = cv2.imencode(
-                ".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, JPEG_QUALITY])
+                ".jpg", envio, [cv2.IMWRITE_JPEG_QUALITY, JPEG_QUALITY])
             if ok_enc:
                 msg["img"] = ("data:image/jpeg;base64," +
                               base64.b64encode(jpg).decode("ascii"))
