@@ -28,11 +28,11 @@ import numpy as np
 
 # ----------------- CONFIGURACION -----------------
 CAM_ID = 0          # indice de camara (ver bridge/list_cameras.py)
-# Resolucion de CAPTURA: a mas pixeles, keypoints mas finos (la ELP AR0234 es
-# de ~2MP; a 640x480 se desperdiciaba). Alta resolucion por USB EXIGE MJPG.
-# Si la camara no la soporta, abrir_camara() cae solo a 640x480.
-CAM_WIDTH = 1600
-CAM_HEIGHT = 1200
+# Resoluciones de CAPTURA a intentar, de mayor a menor: se queda con la
+# primera que la camara entregue de verdad. A mas pixeles, keypoints mas
+# finos. Alta resolucion por USB EXIGE MJPG (ver abrir_camara).
+# Para ver que soporta tu camara: python bridge\list_cameras.py
+CAM_RES_TRY = [(1920, 1200), (1600, 1200), (1280, 960), (640, 480)]
 # Resolucion de SALIDA: video al navegador y espacio de coordenadas de los
 # keypoints. Se infiere en alta y se reescala aqui -> precision de alta
 # resolucion sin canvas gigantes ni ancho de banda de mas.
@@ -95,10 +95,7 @@ def abrir_camara():
     el ancho de banda USB); si la camara no la entrega, baja a 640x480 y
     por ultimo al formato por default. Nunca deja el kiosco sin camara.
     """
-    intentos = []
-    if CAM_WIDTH and CAM_HEIGHT:
-        intentos.append((CAM_WIDTH, CAM_HEIGHT, True))
-    intentos.append((640, 480, True))
+    intentos = [(w, h, True) for (w, h) in CAM_RES_TRY]
     intentos.append((0, 0, False))     # lo que de la camara por default
 
     for backend in (cv2.CAP_MSMF, cv2.CAP_DSHOW, cv2.CAP_ANY):
@@ -106,13 +103,25 @@ def abrir_camara():
         if not cap.isOpened():
             cap.release()
             continue
+        # MSMF a veces acepta el set() pero entrega otra resolucion, asi que
+        # se prueban todas y se conserva la que de verdad da mas pixeles.
+        mejor = None   # (pixeles, wid, hei, mjpg, rw, rh)
         for (wid, hei, mjpg) in intentos:
             frame = _intentar(cap, wid, hei, mjpg)
-            if frame is not None:
-                rh, rw = frame.shape[:2]
+            if frame is None:
+                continue
+            rh, rw = frame.shape[:2]
+            if mejor is None or rw * rh > mejor[0]:
+                mejor = (rw * rh, wid, hei, mjpg, rw, rh)
+            if wid and rw == wid and rh == hei:      # coincidio exacto
                 print(f"[camara] indice {CAM_ID} @ {rw}x{rh} "
                       f"({cap.getBackendName()})", flush=True)
                 return cap
+        if mejor is not None:
+            _intentar(cap, mejor[1], mejor[2], mejor[3])   # re-aplicar la mejor
+            print(f"[camara] indice {CAM_ID} @ {mejor[4]}x{mejor[5]} "
+                  f"({cap.getBackendName()})", flush=True)
+            return cap
         cap.release()
     return None
 
