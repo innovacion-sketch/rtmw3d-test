@@ -45,12 +45,22 @@ La opacidad de cada punto refleja su score (pies ocultos → puntos casi transpa
 - `toe` = dedo gordo. Sin persona detectada: `left`/`right` = `null`.
 - Con varias personas en cuadro se publica solo la de bbox más grande (la más cercana).
 
-## Mediciones (PC oficina, GTX 1660, ELP 640×480)
+## Mediciones (PC oficina, GTX 1660, ELP)
 
 | Métrica | Valor |
 |---|---|
-| FPS pipeline completo (captura+inferencia+envío) | **11.1 FPS** (vs 13.6 de inferencia pura: el costo de captura+JSON+broadcast es ~2.5 FPS) |
-| Latencia captura→navegador | **46 ms** (incluye la inferencia del frame; sobra para efecto espejo) |
+| FPS pipeline completo — ELP 640×480, formato default | **11.1 FPS** |
+| FPS pipeline completo — **ELP 1280×960 MJPG** (actual) | **16.5 FPS** ⬆ |
+| Latencia captura→navegador | **46 ms** (medido a 640×480; sobra para efecto espejo) |
+
+**Hallazgo importante**: subir la captura a 1280×960 **en MJPG** dio 4× más
+píxeles Y +50% de FPS a la vez. El cuello de botella no era la GPU sino la
+transferencia USB en formato crudo: `cap.read()` esperaba frames. En MJPG la
+cámara comprime antes de enviar y el pipeline fluye. Moraleja: forzar MJPG
+siempre, y no asumir que más resolución cuesta FPS.
+
+La inferencia corre a la resolución de captura (keypoints más finos) y las
+coordenadas/video se reescalan a `OUT_MAX_W`=960 para el navegador.
 | Tracking de pies en vivo | Sigue el pie correctamente, sin alucinaciones (prueba cualitativa en vivo) |
 | Estabilidad de Z | **Pie quieto: z estable (sin oscilación visible). Pie en movimiento: varía en el 2º decimal.** Con ambos pies apoyados a igual distancia, las z de ambos talones coinciden (~5.24 vs ~5.27). No se aprecia jitter que requiera filtrado; si el render 3D lo pidiera, un One-Euro suave sobraría. |
 
